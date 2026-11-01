@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Box, Shape, Tone } from "@/lib/types";
 
-// Draws Gemini's shapes over a frame or the paused video, broadcast-telestration
-// style. Everything is laid out in pixels (the overlay measures itself), so
+// Draws Gemini's shapes over a frame or the paused video, in a modern
+// broadcast-telestration style (glowing rings, tapered arrows, hatched zones). Everything is laid out in pixels (the overlay measures itself), so
 // rings stay round and labels can be placed in clear space: each label tries a
 // ring of positions around its target and takes the one that covers the fewest
 // players / the ball / other labels, joined back by a thin leader line.
@@ -45,44 +45,66 @@ function useSize<T extends HTMLElement>() {
 
 export function Telestration({ shapes, avoid = [], compact = false, labels: showLabels = true }: Props) {
   const [ref, { w, h }] = useSize<HTMLDivElement>();
+  const uid = useId().replace(/:/g, "");
   const X = (x: number) => (x / 1000) * w;
   const Y = (y: number) => (y / 1000) * h;
-  const sw = Math.max(1.4, Math.min(3.2, h / (compact ? 130 : 260)));
-  const font = Math.round(Math.max(10, Math.min(14, h / 50)));
+  const sw = Math.max(1.4, Math.min(3.4, h / (compact ? 120 : 240)));
+  const font = Math.round(Math.max(10, Math.min(13, h / 56)));
 
   const labels = useMemo(
     () => (compact || !showLabels || !w ? [] : placeLabels(shapes, avoid, w, h, font)),
     [shapes, avoid, w, h, font, compact, showLabels],
   );
+  const glow = `url(#glow-${uid})`;
 
   return (
     <div ref={ref} className="pointer-events-none absolute inset-0 overflow-hidden">
       {w > 0 && (
         <svg width={w} height={h} className="absolute inset-0">
+          <defs>
+            <filter id={`glow-${uid}`} x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation={sw * 1.6} />
+            </filter>
+            {(Object.keys(TONE) as Tone[]).map((t) => (
+              <pattern key={t} id={`hatch-${t}-${uid}`} width={sw * 4} height={sw * 4} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width={sw * 4} height={sw * 4} fill={TONE[t]} fillOpacity={0.08} />
+                <line x1={0} y1={0} x2={0} y2={sw * 4} stroke={TONE[t]} strokeOpacity={0.45} strokeWidth={sw * 0.9} />
+              </pattern>
+            ))}
+          </defs>
+
           {shapes.map((s, i) => {
             const c = TONE[s.tone];
-            const delay = { animationDelay: `${i * 130}ms` };
+            const delay = { animationDelay: `${i * 140}ms` };
 
+            // ── Player: glowing ring at the feet + marker above the head
             if ((s.kind === "player" || s.kind === "ball") && s.box_2d) {
               const [y0, x0, y1, x1] = s.box_2d;
               const cx = X((x0 + x1) / 2);
               const bw = X(x1) - X(x0);
               if (s.kind === "ball") {
-                const r = Math.max(bw * 0.9, 7);
+                const cy = Y((y0 + y1) / 2);
+                const r = Math.max(bw * 0.95, 7);
                 return (
                   <g key={i} className="tel-pop" style={delay}>
-                    <circle cx={cx} cy={Y((y0 + y1) / 2)} r={r} fill="none" stroke={HALO} strokeWidth={sw + 3} />
-                    <circle cx={cx} cy={Y((y0 + y1) / 2)} r={r} fill="none" stroke={c} strokeWidth={sw} />
+                    <circle cx={cx} cy={cy} r={r * 1.2} fill={c} fillOpacity={0.35} filter={glow} />
+                    <circle cx={cx} cy={cy} r={r} fill="none" stroke={HALO} strokeWidth={sw + 2.5} />
+                    <circle cx={cx} cy={cy} r={r} fill="none" stroke={c} strokeWidth={sw} />
                   </g>
                 );
               }
-              const rx = Math.max(bw * 0.7, 9);
+              const rx = Math.max(bw * 0.75, 10);
               const ry = rx * 0.32;
               const cy = Y(y1);
+              const m = Math.max(5, sw * 2.6); // head marker size
+              const my = Y(y0) - m * 0.9;
               return (
                 <g key={i} className="tel-pop" style={delay}>
-                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={c} fillOpacity={0.1} stroke={HALO} strokeWidth={sw + 2.5} />
-                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw} />
+                  <ellipse cx={cx} cy={cy} rx={rx * 1.15} ry={ry * 1.15} fill={c} fillOpacity={0.32} filter={glow} />
+                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={HALO} strokeWidth={sw + 2.5} />
+                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw * 1.1} />
+                  <ellipse cx={cx} cy={cy} rx={rx * 0.6} ry={ry * 0.6} fill="none" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={Math.max(1, sw * 0.45)} />
+                  <path d={`M${cx - m * 0.7},${my - m} L${cx + m * 0.7},${my - m} L${cx},${my} Z`} fill={c} stroke={HALO} strokeWidth={1.5} strokeLinejoin="round" />
                 </g>
               );
             }
@@ -90,57 +112,72 @@ export function Telestration({ shapes, avoid = [], compact = false, labels: show
             const pts = (s.points ?? []).map((p) => ({ x: X(p.x), y: Y(p.y) }));
             if (pts.length < 2) return null;
 
+            // ── Arrow: tapered, fading in along its path (dashed = should have)
             if (s.kind === "arrow") {
-              const { d, head } = curvedArrow(pts[0], pts[1], sw);
+              const a = arrowGeometry(pts[0], pts[1], sw);
+              const gid = `grad-${i}-${uid}`;
               const dashed = s.tone === "good";
               return (
-                <g key={i} style={delay} className={dashed ? "tel-fade" : undefined}>
-                  <path d={d} fill="none" stroke={HALO} strokeWidth={sw * 1.2 + 3} strokeLinecap="round" />
-                  <path
-                    d={d}
-                    fill="none"
-                    stroke={c}
-                    strokeWidth={sw * 1.2}
-                    strokeLinecap="round"
-                    pathLength={dashed ? undefined : 1}
-                    strokeDasharray={dashed ? `${sw * 3.2} ${sw * 2.4}` : undefined}
-                    className={dashed ? "tel-march" : "tel-draw"}
-                    style={delay}
-                  />
-                  <polygon points={head} fill={c} stroke={HALO} strokeWidth={1.5} className="tel-fade" style={{ animationDelay: `${i * 130 + 450}ms` }} />
+                <g key={i} className="tel-fade" style={delay}>
+                  <defs>
+                    <linearGradient id={gid} gradientUnits="userSpaceOnUse" x1={pts[0].x} y1={pts[0].y} x2={a.base.x} y2={a.base.y}>
+                      <stop offset="0" stopColor={c} stopOpacity={0.35} />
+                      <stop offset="1" stopColor={c} stopOpacity={1} />
+                    </linearGradient>
+                  </defs>
+                  {dashed ? (
+                    <>
+                      <path d={a.centre} fill="none" stroke={HALO} strokeWidth={sw * 1.5 + 2} strokeLinecap="round" strokeDasharray={`${sw * 3} ${sw * 2.2}`} className="tel-march" style={delay} />
+                      <path d={a.centre} fill="none" stroke={`url(#${gid})`} strokeWidth={sw * 1.5} strokeLinecap="round" strokeDasharray={`${sw * 3} ${sw * 2.2}`} className="tel-march" style={delay} />
+                    </>
+                  ) : (
+                    <>
+                      <path d={a.body} fill={c} fillOpacity={0.4} filter={glow} />
+                      <path d={a.body} fill={`url(#${gid})`} stroke={HALO} strokeWidth={0.8} />
+                    </>
+                  )}
+                  <path d={a.head} fill={c} stroke={HALO} strokeWidth={1.5} strokeLinejoin="round" />
                 </g>
               );
             }
 
             const poly = pts.map((p) => `${p.x},${p.y}`).join(" ");
-            if (s.kind === "line" || s.kind === "gap") {
-              const gap = s.kind === "gap";
+
+            // ── Line: glowing line through the players' feet
+            if (s.kind === "line") {
               return (
                 <g key={i} className="tel-fade" style={delay}>
-                  <polyline points={poly} fill="none" stroke={HALO} strokeWidth={sw + 3} strokeLinecap="round" strokeLinejoin="round" />
-                  <polyline
-                    points={poly}
-                    fill="none"
-                    stroke={gap ? "#ffffff" : c}
-                    strokeWidth={gap ? sw * 0.8 : sw}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    pathLength={1}
-                    className="tel-draw"
-                    style={delay}
-                  />
+                  <polyline points={poly} fill="none" stroke={c} strokeOpacity={0.55} strokeWidth={sw * 3} strokeLinecap="round" strokeLinejoin="round" filter={glow} />
+                  <polyline points={poly} fill="none" stroke={c} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" pathLength={1} className="tel-draw" style={delay} />
                   {pts.map((p, j) => (
-                    <circle key={j} cx={p.x} cy={p.y} r={sw * 1.5} fill={gap ? "#ffffff" : c} stroke={HALO} strokeWidth={1.5} />
+                    <circle key={j} cx={p.x} cy={p.y} r={sw * 1.9} fill="#0a0e16" stroke={c} strokeWidth={sw * 0.9} />
                   ))}
                 </g>
               );
             }
 
-            // zone
+            // ── Gap: white dashed span with end ticks
+            if (s.kind === "gap") {
+              const [a, b] = pts;
+              const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+              const nx = (-(b.y - a.y) / len) * sw * 3;
+              const ny = ((b.x - a.x) / len) * sw * 3;
+              return (
+                <g key={i} className="tel-fade" style={delay}>
+                  <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={HALO} strokeWidth={sw + 2.5} strokeLinecap="round" />
+                  <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#ffffff" strokeWidth={sw * 0.9} strokeDasharray={`${sw * 2.5} ${sw * 1.8}`} strokeLinecap="round" />
+                  {[a, b].map((p, j) => (
+                    <line key={j} x1={p.x - nx} y1={p.y - ny} x2={p.x + nx} y2={p.y + ny} stroke="#ffffff" strokeWidth={sw} strokeLinecap="round" />
+                  ))}
+                </g>
+              );
+            }
+
+            // ── Zone: hatched danger area
             return (
               <g key={i} className="tel-fade" style={delay}>
-                <polygon points={poly} fill={c} fillOpacity={0.18} stroke={HALO} strokeWidth={sw + 2} strokeLinejoin="round" />
-                <polygon points={poly} fill="none" stroke={c} strokeWidth={sw * 0.8} strokeDasharray={`${sw * 3} ${sw * 2}`} strokeLinejoin="round" />
+                <polygon points={poly} fill={`url(#hatch-${s.tone}-${uid})`} />
+                <polygon points={poly} fill="none" stroke={c} strokeOpacity={0.9} strokeWidth={sw * 0.8} strokeDasharray={`${sw * 3} ${sw * 2}`} strokeLinejoin="round" />
               </g>
             );
           })}
@@ -148,10 +185,10 @@ export function Telestration({ shapes, avoid = [], compact = false, labels: show
           {/* Leader lines from labels to their targets */}
           {labels.map((l, i) =>
             l && l.leader ? (
-              <g key={`ld${i}`} className="tel-fade" style={{ animationDelay: `${i * 130 + 250}ms` }}>
-                <line x1={l.leader.x1} y1={l.leader.y1} x2={l.leader.x2} y2={l.leader.y2} stroke={HALO} strokeWidth={3} />
-                <line x1={l.leader.x1} y1={l.leader.y1} x2={l.leader.x2} y2={l.leader.y2} stroke={TONE[shapes[i].tone]} strokeWidth={1.4} />
-                <circle cx={l.leader.x2} cy={l.leader.y2} r={2.4} fill={TONE[shapes[i].tone]} />
+              <g key={`ld${i}`} className="tel-fade" style={{ animationDelay: `${i * 140 + 250}ms` }}>
+                <line x1={l.leader.x1} y1={l.leader.y1} x2={l.leader.x2} y2={l.leader.y2} stroke={HALO} strokeWidth={2.6} />
+                <line x1={l.leader.x1} y1={l.leader.y1} x2={l.leader.x2} y2={l.leader.y2} stroke={TONE[shapes[i].tone]} strokeOpacity={0.9} strokeWidth={1.2} />
+                <circle cx={l.leader.x2} cy={l.leader.y2} r={2.2} fill={TONE[shapes[i].tone]} />
               </g>
             ) : null,
           )}
@@ -165,18 +202,19 @@ export function Telestration({ shapes, avoid = [], compact = false, labels: show
         return (
           <span
             key={i}
-            className="tel-fade absolute flex items-center gap-1.5 whitespace-nowrap rounded-md border border-white/10 px-1.5 font-semibold leading-none shadow-md shadow-black/30"
+            className="tel-fade absolute flex items-center whitespace-nowrap rounded-md font-bold uppercase leading-none tracking-[0.06em] shadow-lg shadow-black/40 backdrop-blur-sm"
             style={{
               left: l.rect.x,
               top: l.rect.y,
               height: l.rect.h,
               fontSize: font,
-              background: "rgba(8,12,20,0.78)",
-              color: gap ? "#fff" : "#f4f6fa",
-              animationDelay: `${i * 130 + 250}ms`,
+              padding: gap ? "0 6px" : "0 8px 0 7px",
+              background: gap ? "rgba(255,255,255,0.92)" : "rgba(10,14,22,0.82)",
+              color: gap ? "#0a0e16" : "#f4f6fa",
+              borderLeft: gap ? undefined : `3px solid ${TONE[s.tone]}`,
+              animationDelay: `${i * 140 + 250}ms`,
             }}
           >
-            {!gap && <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: TONE[s.tone] }} />}
             {s.label}
           </span>
         );
@@ -185,25 +223,49 @@ export function Telestration({ shapes, avoid = [], compact = false, labels: show
   );
 }
 
-// Gentle curve from a to b, with a solid arrowhead at b.
-function curvedArrow(a: { x: number; y: number }, b: { x: number; y: number }, sw: number) {
+// A gently curved, tapered arrow from a to b: the body is a filled outline
+// (thin at the start, thick near the head), plus a chevron arrowhead.
+function arrowGeometry(a: { x: number; y: number }, b: { x: number; y: number }, sw: number) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
-  const bend = Math.min(len * 0.14, 40);
-  const cx = (a.x + b.x) / 2 - (dy / len) * bend;
-  const cy = (a.y + b.y) / 2 + (dx / len) * bend;
-  const tx = b.x - cx;
-  const ty = b.y - cy;
-  const tl = Math.hypot(tx, ty) || 1;
-  const ux = tx / tl;
-  const uy = ty / tl;
-  const size = Math.max(9, sw * 4);
-  const bx = b.x - ux * size;
-  const by = b.y - uy * size;
-  const head = `${b.x},${b.y} ${bx - uy * size * 0.55},${by + ux * size * 0.55} ${bx + uy * size * 0.55},${by - ux * size * 0.55}`;
-  // stop the shaft at the arrowhead's base
-  return { d: `M${a.x},${a.y} Q${cx},${cy} ${bx},${by}`, head };
+  const bend = Math.min(len * 0.12, 36);
+  const c = { x: (a.x + b.x) / 2 - (dy / len) * bend, y: (a.y + b.y) / 2 + (dx / len) * bend };
+  const size = Math.max(12, sw * 5);
+  const tl = Math.hypot(b.x - c.x, b.y - c.y) || 1;
+  const ux = (b.x - c.x) / tl;
+  const uy = (b.y - c.y) / tl;
+  const base = { x: b.x - ux * size * 0.85, y: b.y - uy * size * 0.85 };
+
+  // Sample the curve a → c → base and offset each side by a growing width.
+  const q = (t: number) => ({
+    x: (1 - t) ** 2 * a.x + 2 * (1 - t) * t * c.x + t * t * base.x,
+    y: (1 - t) ** 2 * a.y + 2 * (1 - t) * t * c.y + t * t * base.y,
+  });
+  const N = 24;
+  const left: string[] = [];
+  const right: string[] = [];
+  for (let k = 0; k <= N; k++) {
+    const t = k / N;
+    const p = q(t);
+    const p2 = q(Math.min(1, t + 0.01));
+    const p1 = q(Math.max(0, t - 0.01));
+    const tx = p2.x - p1.x;
+    const ty = p2.y - p1.y;
+    const tn = Math.hypot(tx, ty) || 1;
+    const half = sw * 0.4 + sw * 1.0 * t;
+    left.push(`${p.x - (ty / tn) * half},${p.y + (tx / tn) * half}`);
+    right.unshift(`${p.x + (ty / tn) * half},${p.y - (tx / tn) * half}`);
+  }
+  const wing = size * 0.62;
+  const back = { x: b.x - ux * size, y: b.y - uy * size };
+  const notch = { x: b.x - ux * size * 0.7, y: b.y - uy * size * 0.7 };
+  return {
+    base,
+    centre: `M${a.x},${a.y} Q${c.x},${c.y} ${base.x},${base.y}`,
+    body: `M${left.join(" L")} L${right.join(" L")} Z`,
+    head: `M${b.x},${b.y} L${back.x - uy * wing},${back.y + ux * wing} L${notch.x},${notch.y} L${back.x + uy * wing},${back.y - ux * wing} Z`,
+  };
 }
 
 // ── Label placement ────────────────────────────────────────────────────────
@@ -214,7 +276,8 @@ function textWidth(text: string, font: number): number {
   measureCtx ??= document.createElement("canvas").getContext("2d");
   if (!measureCtx) return text.length * font * 0.6;
   measureCtx.font = `700 ${font}px ui-sans-serif, system-ui, sans-serif`;
-  return measureCtx.measureText(text).width;
+  // labels are uppercase with letter-spacing
+  return measureCtx.measureText(text.toUpperCase()).width + text.length * font * 0.06;
 }
 
 const overlap = (a: Rect, b: Rect) =>
@@ -239,14 +302,18 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
   // the drawn rings.
   const obstacles: Rect[] = [
     ...avoid.map((b) => boxRect(b, 3)),
-    ...shapes.filter((s) => s.box_2d).map((s) => boxRect(s.box_2d as Box, 6)),
+    ...shapes.filter((s) => s.box_2d).map((s) => {
+      const r = boxRect(s.box_2d as Box, 6);
+      const m = Math.max(14, h / 45); // keep the head marker clear too
+      return { ...r, y: r.y - m, h: r.h + m };
+    }),
   ];
   const placed: Rect[] = [];
   const lh = Math.round(font * 1.65);
 
   return shapes.map((s) => {
     if (!s.label) return null;
-    const lw = textWidth(s.label, font) + (s.kind === "gap" ? 12 : 22);
+    const lw = textWidth(s.label, font) + (s.kind === "gap" ? 12 : 18);
 
     // Anchor point the label refers to.
     let ax: number;
@@ -254,7 +321,7 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
     if (s.box_2d) {
       const [y0, x0, , x1] = s.box_2d;
       ax = X((x0 + x1) / 2);
-      ay = Y(y0);
+      ay = Y(y0) - (s.kind === "player" ? Math.max(14, h / 45) : 0); // above the head marker
     } else {
       const p = (s.points ?? []).map((q) => ({ x: X(q.x), y: Y(q.y) }));
       if (p.length === 0) return null;

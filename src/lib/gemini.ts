@@ -329,11 +329,12 @@ const ANNOTATION_SCHEMA = {
           tone: { type: "STRING", enum: ["error", "good", "info"] },
           label: S("Max 3 words, or empty."),
           id: { type: "INTEGER", description: "player: the number of the person on the frame." },
-          ids: { type: "ARRAY", items: { type: "INTEGER" }, description: "line: numbers of the players, left to right. gap: exactly two numbers." },
+          ids: { type: "ARRAY", items: { type: "INTEGER" }, description: "line: players left to right. gap: exactly two. zone: the 2-5 players around the open space." },
           from_id: { type: "INTEGER", description: "arrow: number of the player the arrow starts at." },
           from_ball: { type: "BOOLEAN", description: "arrow: true if it starts at the ball (a pass)." },
+          to_id: { type: "INTEGER", description: "arrow: number of the player it ends at (pass receiver, runner being tracked, attacker to press). Prefer this over 'to'." },
           to: PT,
-          points: { type: "ARRAY", items: PT, description: "zone: 3-6 polygon points (0-1000)." },
+          points: { type: "ARRAY", items: PT, description: "zone: only if 'ids' can't describe it — 3-6 polygon points (0-1000)." },
         },
         required: ["kind", "tone", "label"],
       },
@@ -356,10 +357,10 @@ If MEASURED distances are given in the brief (from pitch-line calibration), trus
 Then draw (only if status is "supported"; otherwise return no shapes):
 - player {id}: ring the key player. tone "error" = at fault, "good" = did well, "info" = context (ball carrier, attacker).
 - ball: ring the ball — only if the brief says it was detected.
-- arrow {from_id or from_ball, to}: a run, a pass, or where a player SHOULD have moved (tone "good"). "to" is a pitch point (0-1000 on this image).
+- arrow {from_id or from_ball, to_id or to}: a pass (from_ball → receiver's number), a run, or where a player SHOULD have moved (tone "good"). End it on a player number whenever it goes to a player; use "to" (a point, 0-1000) only for a run into empty space.
 - line {ids}: a defensive or midfield line through those players, left to right.
 - gap {ids: [a, b]}: highlight the space between two players. Never write a distance yourself — measured distances are added automatically.
-- zone {points}: open space that was exploited (tone "error").
+- zone {ids}: open space that was exploited (tone "error"), given by the 2-5 players around it (e.g. the two centre-backs either side of the gap).
 
 Keep it clean so the play stays visible: 2-4 shapes, the fewest that make the ONE point. Labels max 3 words, or empty when obvious.`;
 
@@ -371,6 +372,44 @@ const pt = (p: unknown): Pt | null => {
   return q && Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: clamp(q.x), y: clamp(q.y) } : null;
 };
 
+// The open space framed by some players' feet: a lens between two players,
+// or the convex hull of three or more, pulled slightly inwards so the shaded
+// area is the space itself rather than the players.
+function zoneAround(feetPts: Pt[]): Pt[] {
+  if (feetPts.length === 2) {
+    const [a, b] = feetPts;
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const wdt = Math.min(len * 0.28, 60); // half-thickness of the lens
+    const nx = (-dy / len) * wdt;
+    const ny = (dx / len) * wdt * 0.6; // flatter in depth (camera perspective)
+    const inset = (p: Pt) => ({ x: p.x + (mx - p.x) * 0.15, y: p.y + (my - p.y) * 0.15 });
+    const A = inset(a);
+    const B = inset(b);
+    return [A, { x: mx + nx, y: my + ny }, B, { x: mx - nx, y: my - ny }].map((p) => ({ x: clamp(p.x), y: clamp(p.y) }));
+  }
+  // Convex hull (monotone chain), then shrink 12% towards the centre.
+  const P = [...feetPts].sort((p, q) => p.x - q.x || p.y - q.y);
+  const cross = (o: Pt, a: Pt, b: Pt) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Pt[] = [];
+  for (const p of P) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: Pt[] = [];
+  for (const p of [...P].reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
+  const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
+  return hull.map((p) => ({ x: clamp(p.x + (cx - p.x) * 0.12), y: clamp(p.y + (cy - p.y) * 0.12) }));
+}
+
 interface RawShape {
   kind?: string;
   tone?: string;
@@ -379,6 +418,7 @@ interface RawShape {
   ids?: number[];
   from_id?: number;
   from_ball?: boolean;
+  to_id?: number;
   to?: unknown;
   points?: unknown[];
 }
@@ -401,7 +441,8 @@ function resolveShapes(raw: RawShape[], det: Detection): Shape[] {
         break;
       case "arrow": {
         const from = s.from_ball && det.ball ? centre(det.ball) : box(s.from_id) ? feet(box(s.from_id) as Box) : null;
-        const to = pt(s.to);
+        const toBox = box(s.to_id);
+        const to = toBox ? feet(toBox) : pt(s.to);
         if (from && to) out.push({ kind: "arrow", tone, label, points: [from, to] });
         break;
       }
@@ -423,8 +464,9 @@ function resolveShapes(raw: RawShape[], det: Detection): Shape[] {
         break;
       }
       case "zone": {
-        const pts = (s.points ?? []).map(pt).filter((p): p is Pt => !!p);
-        if (pts.length >= 3) out.push({ kind: "zone", tone, label, points: pts.slice(0, 6) });
+        const around = (s.ids ?? []).map(box).filter((b): b is Box => !!b).map(feet);
+        const pts = around.length >= 2 ? zoneAround(around) : (s.points ?? []).map(pt).filter((p): p is Pt => !!p);
+        if (pts.length >= 3) out.push({ kind: "zone", tone, label, points: pts.slice(0, 12) });
         break;
       }
     }
