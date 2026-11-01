@@ -4,7 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Box, Shape, Tone } from "@/lib/types";
 
 // Draws Gemini's shapes over a frame or the paused video, in a modern
-// broadcast-telestration style (glowing rings, tapered arrows, hatched zones). Everything is laid out in pixels (the overlay measures itself), so
+// broadcast-telestration style (player boxes + glowing rings, tapered arrows,
+// hatched zones). Labels connect to the player's box with a leader line. Everything is laid out in pixels (the overlay measures itself), so
 // rings stay round and labels can be placed in clear space: each label tries a
 // ring of positions around its target and takes the one that covers the fewest
 // players / the ball / other labels, joined back by a thin leader line.
@@ -96,15 +97,19 @@ export function Telestration({ shapes, avoid = [], compact = false, labels: show
               const rx = Math.max(bw * 0.75, 10);
               const ry = rx * 0.32;
               const cy = Y(y1);
-              const m = Math.max(5, sw * 2.6); // head marker size
-              const my = Y(y0) - m * 0.9;
+              const pad = Math.max(3, sw * 1.2);
+              const bx = X(x0) - pad;
+              const by = Y(y0) - pad;
+              const bwd = X(x1) - X(x0) + pad * 2;
+              const bh = cy - by + pad * 0.5;
               return (
                 <g key={i} className="tel-pop" style={delay}>
                   <ellipse cx={cx} cy={cy} rx={rx * 1.15} ry={ry * 1.15} fill={c} fillOpacity={0.32} filter={glow} />
                   <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={HALO} strokeWidth={sw + 2.5} />
                   <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw * 1.1} />
                   <ellipse cx={cx} cy={cy} rx={rx * 0.6} ry={ry * 0.6} fill="none" stroke="#ffffff" strokeOpacity={0.55} strokeWidth={Math.max(1, sw * 0.45)} />
-                  <path d={`M${cx - m * 0.7},${my - m} L${cx + m * 0.7},${my - m} L${cx},${my} Z`} fill={c} stroke={HALO} strokeWidth={1.5} strokeLinejoin="round" />
+                  <rect x={bx} y={by} width={bwd} height={bh} rx={Math.max(3, sw * 1.5)} fill={c} fillOpacity={0.1} stroke={HALO} strokeWidth={sw + 2} />
+                  <rect x={bx} y={by} width={bwd} height={bh} rx={Math.max(3, sw * 1.5)} fill="none" stroke={c} strokeWidth={Math.max(1.2, sw * 0.8)} />
                 </g>
               );
             }
@@ -302,11 +307,7 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
   // the drawn rings.
   const obstacles: Rect[] = [
     ...avoid.map((b) => boxRect(b, 3)),
-    ...shapes.filter((s) => s.box_2d).map((s) => {
-      const r = boxRect(s.box_2d as Box, 6);
-      const m = Math.max(14, h / 45); // keep the head marker clear too
-      return { ...r, y: r.y - m, h: r.h + m };
-    }),
+    ...shapes.filter((s) => s.box_2d).map((s) => boxRect(s.box_2d as Box, 8)),
   ];
   const placed: Rect[] = [];
   const lh = Math.round(font * 1.65);
@@ -321,7 +322,7 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
     if (s.box_2d) {
       const [y0, x0, , x1] = s.box_2d;
       ax = X((x0 + x1) / 2);
-      ay = Y(y0) - (s.kind === "player" ? Math.max(14, h / 45) : 0); // above the head marker
+      ay = Y(y0);
     } else {
       const p = (s.points ?? []).map((q) => ({ x: X(q.x), y: Y(q.y) }));
       if (p.length === 0) return null;
@@ -362,11 +363,19 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
     if (!best) return null;
     placed.push(best.rect);
 
-    // Leader line from the label's nearest edge to the anchor.
+    // Leader line from the label's nearest edge to its target: for a player,
+    // the nearest point on the player's box; otherwise the anchor point.
     const r = best.rect;
-    const nx = Math.max(r.x, Math.min(ax, r.x + r.w));
-    const ny = Math.max(r.y, Math.min(ay, r.y + r.h));
-    const leader = Math.hypot(nx - ax, ny - ay) > 8 ? { x1: nx, y1: ny, x2: ax, y2: ay } : null;
+    let tx = ax;
+    let ty = ay;
+    if (s.kind === "player" && s.box_2d) {
+      const b = boxRect(s.box_2d, Math.max(3, h / 200));
+      tx = Math.max(b.x, Math.min(r.x + r.w / 2, b.x + b.w));
+      ty = Math.max(b.y, Math.min(r.y + r.h / 2, b.y + b.h));
+    }
+    const nx = Math.max(r.x, Math.min(tx, r.x + r.w));
+    const ny = Math.max(r.y, Math.min(ty, r.y + r.h));
+    const leader = Math.hypot(nx - tx, ny - ty) > 6 ? { x1: nx, y1: ny, x2: tx, y2: ty } : null;
     return { rect: r, leader };
   });
 }
