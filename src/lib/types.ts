@@ -81,7 +81,7 @@ export interface BoardPt {
 export type BoardTone = Tone | "none";
 
 export interface Board {
-  players: Array<BoardPt & { team: "us" | "them"; role: string; tone: BoardTone }>;
+  players: Array<BoardPt & { team: "us" | "them"; tone: BoardTone }>;
   ball?: BoardPt;
   lines: Array<{ label: string; tone: BoardTone; points: BoardPt[] }>;
   arrows: Array<{ label: string; tone: BoardTone; from: BoardPt; to: BoardPt }>;

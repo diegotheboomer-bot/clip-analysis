@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { captureFrames, type Frame } from "@/lib/frames";
 import { buildMoments, drawOrder, formatTime, toSeconds } from "@/lib/moments";
 import type { Annotation, Board, ClipAnalysis, Moment } from "@/lib/types";
-import { PitchBoard } from "./PitchBoard";
+import { BOARD_ASPECT, PitchBoard } from "./PitchBoard";
 import { TONE, Telestration } from "./Telestration";
 
 const MAX_BYTES = 50 * 1024 * 1024;
@@ -37,7 +37,6 @@ const KIND = {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const card = "rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur";
-const BOARD_ASPECT = 74 / 111;
 
 export function ClipAnalyzer() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -62,6 +61,8 @@ export function ClipAnalyzer() {
   const [boards, setBoards] = useState<Record<string, Async<Board>>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
   const [overlay, setOverlay] = useState(false);
+  const [drawMode, setDrawMode] = useState<"labels" | "lines">("labels");
+  const [zoom, setZoom] = useState(true);
   const [view, setView] = useState<"video" | "board">("video");
   const [full, setFull] = useState(false);
   const [now, setNow] = useState(0);
@@ -240,7 +241,17 @@ export function ClipAnalyzer() {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
   }, []);
   useEffect(() => {
-    const onChange = () => !document.fullscreenElement && setFull(false);
+    const onChange = () => {
+      const el = document.fullscreenElement;
+      if (!el) return setFull(false);
+      if (el.tagName === "VIDEO") {
+        // The player's own full screen hides the drawing layer — switch to ours.
+        document.exitFullscreen().then(() => {
+          setFull(true);
+          document.documentElement.requestFullscreen?.().catch(() => undefined);
+        }, () => undefined);
+      }
+    };
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
@@ -442,8 +453,11 @@ export function ClipAnalyzer() {
                     ref={videoRef}
                     src={url}
                     controls
+                    controlsList="nofullscreen nodownload"
+                    disablePictureInPicture
                     playsInline
                     className="block w-full bg-black"
+                    onDoubleClick={() => (full ? exitFull() : enterFull())}
                     onPlay={() => setOverlay(false)}
                     onTimeUpdate={(e) => {
                       const t = e.currentTarget.currentTime;
@@ -456,7 +470,7 @@ export function ClipAnalyzer() {
                     }}
                   />
                   {overlay && activeDrawing && typeof activeDrawing === "object" && (
-                    <Telestration key={active?.id} shapes={activeDrawing.shapes} avoid={activeDrawing.avoid} />
+                    <Telestration key={active?.id} shapes={activeDrawing.shapes} avoid={activeDrawing.avoid} labels={drawMode === "labels"} />
                   )}
                   {overlay && activeDrawing === "loading" && (
                     <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-2 py-1 text-[11px] font-bold text-ink-300">Drawing…</span>
@@ -470,6 +484,8 @@ export function ClipAnalyzer() {
                     usColor={usColor}
                     themColor={themColor}
                     showDistances={format === "11v11"}
+                    zoom={zoom}
+                    onZoom={() => setZoom((z) => !z)}
                     myLabel={myColour}
                     oppLabel={oppColour || "Opponent"}
                     onRetry={() => active && void requestBoard(active, frames[active.id])}
@@ -487,14 +503,19 @@ export function ClipAnalyzer() {
                 <p className="hidden min-w-0 flex-1 truncate px-2 text-center text-[12px] italic text-ink-400 sm:block">
                   {view === "video" && activeDrawing && typeof activeDrawing === "object" ? activeDrawing.caption : "← → moments · F full screen"}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setOverlay((o) => !o)}
-                  disabled={!active || view !== "video"}
-                  className={`rounded-lg px-3 py-1.5 text-[12px] font-bold transition disabled:opacity-40 ${overlay ? "bg-white text-black" : "bg-white/5 text-ink-300"}`}
-                >
-                  Drawings {overlay ? "on" : "off"}
-                </button>
+                <Segmented
+                  value={!overlay ? "off" : drawMode}
+                  onChange={(v) => {
+                    if (v === "off") return setOverlay(false);
+                    setDrawMode(v);
+                    if (active) select(active, false);
+                  }}
+                  options={[
+                    ["labels", "Labels"],
+                    ["lines", "Lines"],
+                    ["off", "Off"],
+                  ]}
+                />
               </div>
             </div>
             {!full && view === "video" && activeDrawing && typeof activeDrawing === "object" && activeDrawing.caption && (
@@ -601,6 +622,8 @@ function BoardView({
   usColor,
   themColor,
   showDistances,
+  zoom,
+  onZoom,
   myLabel,
   oppLabel,
   onRetry,
@@ -610,6 +633,8 @@ function BoardView({
   usColor: string;
   themColor: string;
   showDistances: boolean;
+  zoom: boolean;
+  onZoom: () => void;
   myLabel: string;
   oppLabel: string;
   onRetry: () => void;
@@ -621,7 +646,7 @@ function BoardView({
         style={full ? { height: "calc(100vh - 220px)", aspectRatio: String(BOARD_ASPECT) } : { width: `min(100%, calc(62vh * ${BOARD_ASPECT}))`, aspectRatio: String(BOARD_ASPECT) }}
       >
         {state && typeof state === "object" ? (
-          <PitchBoard board={state} usColor={usColor} themColor={themColor} showDistances={showDistances} />
+          <PitchBoard board={state} usColor={usColor} themColor={themColor} showDistances={showDistances} zoom={zoom} />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-lg bg-[#266a29]/40 text-center">
             {state === "error" ? (
@@ -648,6 +673,11 @@ function BoardView({
           <span className="h-2.5 w-2.5 rounded-full border border-white" style={{ background: themColor }} /> {oppLabel}
         </span>
         <span>Our goal at the bottom · approximate, from one camera frame{showDistances ? " · distances assume 105×68m" : ""}</span>
+        {state && typeof state === "object" && (
+          <button type="button" onClick={onZoom} className="rounded-md bg-white/10 px-2 py-1 font-bold text-white hover:bg-white/20">
+            {zoom ? "Full pitch" : "Zoom to action"}
+          </button>
+        )}
       </div>
     </div>
   );

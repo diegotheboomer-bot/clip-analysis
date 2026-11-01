@@ -19,7 +19,8 @@ const HALO = "rgba(5,8,14,0.6)";
 interface Props {
   shapes: Shape[];
   avoid?: Box[];
-  compact?: boolean; // thumbnails: no labels
+  compact?: boolean; // thumbnails: thinner, no labels
+  labels?: boolean;
 }
 
 interface Rect {
@@ -42,16 +43,16 @@ function useSize<T extends HTMLElement>() {
   return [ref, size] as const;
 }
 
-export function Telestration({ shapes, avoid = [], compact = false }: Props) {
+export function Telestration({ shapes, avoid = [], compact = false, labels: showLabels = true }: Props) {
   const [ref, { w, h }] = useSize<HTMLDivElement>();
   const X = (x: number) => (x / 1000) * w;
   const Y = (y: number) => (y / 1000) * h;
-  const sw = Math.max(1.6, Math.min(4.5, h / (compact ? 120 : 210)));
-  const font = Math.round(Math.max(11, Math.min(16, h / 38)));
+  const sw = Math.max(1.4, Math.min(3.2, h / (compact ? 130 : 260)));
+  const font = Math.round(Math.max(10, Math.min(14, h / 50)));
 
   const labels = useMemo(
-    () => (compact || !w ? [] : placeLabels(shapes, avoid, w, h, font)),
-    [shapes, avoid, w, h, font, compact],
+    () => (compact || !showLabels || !w ? [] : placeLabels(shapes, avoid, w, h, font)),
+    [shapes, avoid, w, h, font, compact, showLabels],
   );
 
   return (
@@ -75,14 +76,13 @@ export function Telestration({ shapes, avoid = [], compact = false }: Props) {
                   </g>
                 );
               }
-              const rx = Math.max(bw * 0.95, 11);
-              const ry = rx * 0.34;
+              const rx = Math.max(bw * 0.7, 9);
+              const ry = rx * 0.32;
               const cy = Y(y1);
               return (
                 <g key={i} className="tel-pop" style={delay}>
-                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={c} fillOpacity={0.16} stroke={HALO} strokeWidth={sw + 3.5} />
-                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw * 1.15} />
-                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw * 0.6} className="tel-pulse" />
+                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={c} fillOpacity={0.1} stroke={HALO} strokeWidth={sw + 2.5} />
+                  <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill="none" stroke={c} strokeWidth={sw} />
                 </g>
               );
             }
@@ -165,13 +165,13 @@ export function Telestration({ shapes, avoid = [], compact = false }: Props) {
         return (
           <span
             key={i}
-            className="tel-fade absolute flex items-center gap-1.5 whitespace-nowrap rounded-md border border-white/10 px-2 font-bold leading-none shadow-lg shadow-black/40 backdrop-blur-sm"
+            className="tel-fade absolute flex items-center gap-1.5 whitespace-nowrap rounded-md border border-white/10 px-1.5 font-semibold leading-none shadow-md shadow-black/30"
             style={{
               left: l.rect.x,
               top: l.rect.y,
               height: l.rect.h,
               fontSize: font,
-              background: "rgba(8,12,20,0.86)",
+              background: "rgba(8,12,20,0.78)",
               color: gap ? "#fff" : "#f4f6fa",
               animationDelay: `${i * 130 + 250}ms`,
             }}
@@ -242,11 +242,11 @@ function placeLabels(shapes: Shape[], avoid: Box[], w: number, h: number, font: 
     ...shapes.filter((s) => s.box_2d).map((s) => boxRect(s.box_2d as Box, 6)),
   ];
   const placed: Rect[] = [];
-  const lh = Math.round(font * 1.75);
+  const lh = Math.round(font * 1.65);
 
   return shapes.map((s) => {
     if (!s.label) return null;
-    const lw = textWidth(s.label, font) + (s.kind === "gap" ? 16 : 26);
+    const lw = textWidth(s.label, font) + (s.kind === "gap" ? 12 : 22);
 
     // Anchor point the label refers to.
     let ax: number;

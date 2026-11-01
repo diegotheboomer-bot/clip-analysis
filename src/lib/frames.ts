@@ -13,8 +13,9 @@ const once = (el: HTMLVideoElement, ev: string, ms = 8000) =>
   });
 
 // Grab still frames from a local video at the given times (seconds), using a
-// hidden <video> so the visible player isn't disturbed.
-export async function captureFrames(url: string, times: number[], maxW = 1280): Promise<Frame[]> {
+// hidden <video> so the visible player isn't disturbed. Kept at up to full HD
+// so a small, distant ball survives.
+export async function captureFrames(url: string, times: number[], maxW = 1920): Promise<Frame[]> {
   const v = document.createElement("video");
   v.muted = true;
   v.playsInline = true;

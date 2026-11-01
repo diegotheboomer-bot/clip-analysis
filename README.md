@@ -24,5 +24,6 @@ add protection before hosting it publicly.
 2. Env vars (see `.env.example`):
    - `GEMINI_API_KEY`
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (Project Settings → API)
-   - optional `GEMINI_ANALYSIS_MODEL` (default `gemini-3.8-flash`)
+   - optional `GEMINI_ANALYSIS_MODEL` (default `gemini-4-argon` — paid-only; set `gemini-3.8-flash` for the free tier)
+   - optional `GEMINI_DETECT_MODEL` (default `gemini-robotics-er-2-preview`, finds the ball + players on each frame)
 3. `npm install && npm run dev`, or import the repo into Vercel (preset: Next.js).

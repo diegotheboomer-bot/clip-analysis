@@ -9,10 +9,13 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 import "server-only";
-import type { Annotation, Board, BoardPt, BoardTone, ClipAnalysis, ClipContext, Moment, Shape } from "./types";
+import type { Annotation, Board, BoardPt, BoardTone, Box, ClipAnalysis, ClipContext, Moment, Shape } from "./types";
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY ?? "";
-export const MODEL = process.env.GEMINI_ANALYSIS_MODEL ?? "gemini-3.8-flash";
+// Strongest model for the tactical reasoning + drawing; a fast spatial model
+// (built for pointing/detection) to find the ball and players on each frame.
+export const MODEL = process.env.GEMINI_ANALYSIS_MODEL ?? "gemini-4-argon";
+export const DETECT_MODEL = process.env.GEMINI_DETECT_MODEL ?? "gemini-robotics-er-2-preview";
 const BASE = "https://generativelanguage.googleapis.com";
 
 export const MAX_CLIP_SECONDS = 120;
@@ -32,8 +35,8 @@ async function fail(res: Response, step: string): Promise<never> {
 }
 
 // generateContent with JSON output; returns the parsed JSON.
-async function generateJson<T>(parts: unknown[], system: string, schema: unknown): Promise<T> {
-  const res = await gemini(`/v1beta/models/${MODEL}:generateContent`, {
+async function generateJson<T>(parts: unknown[], system: string, schema: unknown, model = MODEL): Promise<T> {
+  const res = await gemini(`/v1beta/models/${model}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -239,13 +242,8 @@ const ANNOTATION_SCHEMA = {
         required: ["kind", "tone", "label"],
       },
     },
-    avoid: {
-      type: "ARRAY",
-      description: "box_2d [ymin, xmin, ymax, xmax] of EVERY visible player, goalkeeper, referee and the ball — labels are kept clear of these.",
-      items: { type: "ARRAY", items: { type: "INTEGER" } },
-    },
   },
-  required: ["caption", "shapes", "avoid"],
+  required: ["caption", "shapes"],
 };
 
 const ANNOTATION_SYSTEM = `You are a football video analyst drawing telestration on a single match frame, like a TV pundit on a touchscreen.
@@ -254,15 +252,17 @@ Coordinates are normalized 0-1000 relative to this image. box_2d is [ymin, xmin,
 
 Shapes:
 - player: box_2d around a key player. tone "error" = at fault, "good" = did well, "info" = context (e.g. the attacker, ball carrier).
-- ball: box_2d around the ball, only if clearly visible.
+- ball: use EXACTLY the ball box given in the brief. If the brief says the ball wasn't found, never draw it or guess where it is.
 - arrow: points [from, to]. Use for a run, a pass, or where a player SHOULD have moved (tone "good" for the correct movement).
 - line: 2+ points along a defensive or midfield line, through the players' feet, left to right.
 - gap: exactly 2 points at two players' feet to show the distance between them; label = estimated distance in metres using the pitch markings for scale (penalty box 16.5m deep, 40.3m wide; centre circle radius 9.15m), e.g. "~14m".
 - zone: 3-6 polygon points around open space that was exploited (tone "error").
 
-Also return "avoid": a box for every visible player, referee and the ball.
-
-Rules: 2-7 shapes, the fewest that make the point clear. Points for players are at their FEET (bottom of their box). Only mark what is actually visible in this frame — if the described moment isn't visible, mark what is relevant and say so in the caption. Labels max 4 words.`;
+Rules — keep it clean, the viewer must still see the play:
+- 2-4 shapes, the fewest that make the ONE point of this moment. No decoration.
+- Labels max 3 words; leave the label empty when the shape is obvious.
+- Points for players are at their FEET (bottom of their box). A pass arrow starts at the ball's given position.
+- Only mark what is actually visible in this frame — if the described moment isn't visible, mark what is relevant and say so in the caption.`;
 
 const KINDS = ["player", "ball", "arrow", "line", "gap", "zone"] as const;
 const clamp = (n: unknown) => Math.max(0, Math.min(1000, Math.round(Number(n) || 0)));
@@ -280,12 +280,12 @@ function cleanBoxes(boxes: unknown): Array<[number, number, number, number]> {
 function cleanShapes(shapes: unknown): Shape[] {
   if (!Array.isArray(shapes)) return [];
   const out: Shape[] = [];
-  for (const raw of shapes.slice(0, 8)) {
+  for (const raw of shapes.slice(0, 5)) {
     const s = raw as Partial<Shape>;
     const kind = KINDS.find((k) => k === s?.kind);
     if (!s || !kind) continue;
     const tone = (["error", "good", "info"] as const).find((t) => t === s.tone) ?? "info";
-    const label = typeof s.label === "string" ? s.label.slice(0, 40) : "";
+    const label = typeof s.label === "string" ? s.label.slice(0, 28) : "";
     if (kind === "player" || kind === "ball") {
       if (!Array.isArray(s.box_2d) || s.box_2d.length !== 4) continue;
       const [y0, x0, y1, x1] = s.box_2d.map(clamp);
@@ -300,13 +300,61 @@ function cleanShapes(shapes: unknown): Shape[] {
   return out;
 }
 
+// ── Detection: where the ball and the people are ─────────────────────────
+// A focused call to a spatial model is far more reliable for a small,
+// distant ball than asking the drawing model to find it while it reasons.
+
+interface Detection {
+  ball: Box | null;
+  people: Box[];
+}
+
+const DETECT_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    ball_visible: { type: "BOOLEAN" },
+    ball: { type: "ARRAY", items: { type: "INTEGER" }, description: "[ymin, xmin, ymax, xmax] 0-1000" },
+    people: { type: "ARRAY", items: { type: "ARRAY", items: { type: "INTEGER" } }, description: "box per player/goalkeeper/referee" },
+  },
+  required: ["ball_visible", "people"],
+};
+
+export async function detectFrame(imageBase64: string, mimeType: string): Promise<Detection> {
+  try {
+    const r = await generateJson<{ ball_visible?: boolean; ball?: unknown; people?: unknown }>(
+      [
+        { inlineData: { mimeType, data: imageBase64 } },
+        {
+          text: "This is a football match frame from a wide camera. Find the ball — it is small and may be far away, partly hidden or motion-blurred; only report it if you can actually see it. Also box every player, goalkeeper and referee on the pitch. Boxes are [ymin, xmin, ymax, xmax] normalized 0-1000.",
+        },
+      ],
+      "You are a precise object detector for football video.",
+      DETECT_SCHEMA,
+      DETECT_MODEL,
+    );
+    const [ball] = r.ball_visible ? cleanBoxes([r.ball]) : [];
+    return { ball: ball ?? null, people: cleanBoxes(r.people) };
+  } catch (e) {
+    console.error("detect failed", e);
+    return { ball: null, people: [] };
+  }
+}
+
+const ballBrief = (d: Detection) =>
+  d.ball
+    ? `The ball is at box_2d [${d.ball.join(", ")}] (detected — use exactly this).`
+    : "The ball could NOT be located in this frame — do not draw the ball or guess its position.";
+
+
 export async function annotateFrame(
   imageBase64: string,
   mimeType: string,
   moment: Pick<Moment, "kind" | "headline" | "who" | "detail" | "fix">,
   ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
 ): Promise<Annotation> {
+  const det = await detectFrame(imageBase64, mimeType);
   const brief = [
+    ballBrief(det),
     `Analysed team kit colour: ${ctx.myTeamColour}.`,
     ctx.opponentColour ? `Opponent kit colour: ${ctx.opponentColour}.` : "",
     `Moment (${moment.kind === "good" ? "done well" : moment.kind === "key" ? "key moment" : "mistake"}): ${moment.headline}.`,
@@ -316,15 +364,21 @@ export async function annotateFrame(
     "Draw this on the frame.",
   ].filter(Boolean);
 
-  const res = await generateJson<{ caption?: string; shapes?: unknown; avoid?: unknown }>(
+  const res = await generateJson<{ caption?: string; shapes?: unknown }>(
     [{ inlineData: { mimeType, data: imageBase64 } }, { text: brief.join("\n") }],
     ANNOTATION_SYSTEM,
     ANNOTATION_SCHEMA,
   );
+
+  // Trust the detector for the ball: snap any ball ring to it, or drop it.
+  const shapes = cleanShapes(res.shapes).flatMap((sh): Shape[] => {
+    if (sh.kind !== "ball") return [sh];
+    return det.ball ? [{ ...sh, box_2d: det.ball }] : [];
+  });
   return {
     caption: typeof res.caption === "string" ? res.caption : "",
-    shapes: cleanShapes(res.shapes),
-    avoid: cleanBoxes(res.avoid),
+    shapes,
+    avoid: det.ball ? [...det.people, det.ball] : det.people,
   };
 }
 
@@ -346,10 +400,9 @@ const BOARD_SCHEMA = {
           team: { type: "STRING", enum: ["us", "them"] },
           x: { type: "NUMBER" },
           y: { type: "NUMBER" },
-          role: S("Short position tag if clear, e.g. GK, LB, CB, DM, ST — else empty."),
           tone: TONE_ENUM,
         },
-        required: ["team", "x", "y", "role", "tone"],
+        required: ["team", "x", "y", "tone"],
       },
     },
     ball: BPT,
@@ -405,7 +458,9 @@ export async function boardFrame(
   moment: Pick<Moment, "kind" | "headline" | "who" | "detail" | "fix">,
   ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
 ): Promise<Board> {
+  const det = await detectFrame(imageBase64, mimeType);
   const brief = [
+    ballBrief(det).replace("do not draw the ball or guess its position", "omit the ball"),
     `Analysed team ("us") kit: ${ctx.myTeamColour}.`,
     ctx.opponentColour ? `Opponent ("them") kit: ${ctx.opponentColour}.` : "",
     `Moment: ${moment.headline}. ${moment.who ? `Who: ${moment.who}. ` : ""}${moment.detail}`,
@@ -423,7 +478,7 @@ export async function boardFrame(
   return {
     players: arr(r.players)
       .slice(0, 30)
-      .map((p) => ({ team: p.team === "them" ? "them" : "us", ...bpt(p), role: label(p.role).slice(0, 4), tone: btone(p.tone) })),
+      .map((p) => ({ team: p.team === "them" ? "them" : "us", ...bpt(p), tone: btone(p.tone) })),
     ball: r.ball ? bpt(r.ball) : undefined,
     lines: arr(r.lines)
       .map((l) => ({ label: label(l.label), tone: btone(l.tone), points: arr(l.points).map(bpt) }))
