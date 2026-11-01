@@ -21,7 +21,6 @@ const field =
   "w-full rounded-xl border border-ink-700 bg-ink-900 px-3 py-2.5 text-[16px] text-white outline-none placeholder:text-ink-500 focus:border-brand";
 
 export function ClipAnalyzer() {
-  const [password, setPassword] = useState("");
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -34,8 +33,6 @@ export function ClipAnalyzer() {
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ClipAnalysis | null>(null);
-
-  useEffect(() => setPassword(localStorage.getItem("clip-password") ?? ""), []);
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
@@ -68,9 +65,7 @@ export function ClipAnalyzer() {
     setError(null);
     setResult(null);
 
-    if (!password) return setError("Enter the password.");
-    localStorage.setItem("clip-password", password);
-    const headers = { "Content-Type": "application/json", "x-app-password": password };
+    const headers = { "Content-Type": "application/json" };
 
     try {
       setStage("uploading");
@@ -121,13 +116,6 @@ export function ClipAnalyzer() {
         </p>
       </div>
 
-      <input
-        type="password"
-        className={field}
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
 
       <label className="block cursor-pointer rounded-2xl border-2 border-dashed border-ink-700 bg-ink-900 px-4 py-6 text-center text-[13.5px] text-ink-300 hover:border-brand">
         {file ? file.name : "Choose a clip (MP4 / MOV / WebM, max 50 MB, up to 2 min)"}

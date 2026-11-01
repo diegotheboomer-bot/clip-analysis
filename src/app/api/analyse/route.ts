@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authorised } from "@/lib/auth";
 import { CLIPS_BUCKET, supabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   MAX_CLIP_SECONDS,
@@ -18,7 +17,6 @@ export const maxDuration = 300;
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 export async function POST(request: Request) {
-  if (!authorised(request)) return NextResponse.json({ error: "Wrong password" }, { status: 401 });
   if (!supabaseAdmin) return NextResponse.json({ error: "Server not configured" }, { status: 500 });
 
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;

@@ -12,8 +12,8 @@ browser → Supabase Storage (signed upload, since Vercel caps request bodies at
 → `/api/analyse` → Gemini Files API → structured JSON. The clip is deleted from
 Supabase and Gemini straight after.
 
-The app is locked with one shared password (`APP_PASSWORD`) because every
-analysis costs Gemini credits.
+There is no login: anyone who can reach the app can use your Gemini credits, so
+add protection before hosting it publicly.
 
 ## Setup
 
@@ -21,6 +21,5 @@ analysis costs Gemini credits.
 2. Env vars (see `.env.example`):
    - `GEMINI_API_KEY`
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (Project Settings → API)
-   - `APP_PASSWORD` — any password you choose
    - optional `GEMINI_ANALYSIS_MODEL` (default `gemini-3.8-flash`)
 3. `npm install && npm run dev`, or import the repo into Vercel (preset: Next.js).

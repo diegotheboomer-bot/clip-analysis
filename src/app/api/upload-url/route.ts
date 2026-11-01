@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { authorised } from "@/lib/auth";
 import { CLIPS_BUCKET, MAX_CLIP_BYTES, supabaseAdmin } from "@/lib/supabaseAdmin";
 
 // Issues a one-off signed upload URL so the browser can send the clip straight
@@ -9,7 +8,6 @@ export const dynamic = "force-dynamic";
 const EXT: Record<string, string> = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm" };
 
 export async function POST(request: Request) {
-  if (!authorised(request)) return NextResponse.json({ error: "Wrong password" }, { status: 401 });
   if (!supabaseAdmin) return NextResponse.json({ error: "Server not configured" }, { status: 500 });
 
   const body = (await request.json().catch(() => ({}))) as { type?: string; size?: number };
@@ -23,7 +21,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabaseAdmin.storage.from(CLIPS_BUCKET).createSignedUploadUrl(path);
   if (error || !data) {
     console.error("upload-url error", error);
-    return NextResponse.json({ error: "Could not start upload" }, { status: 500 });
+    return NextResponse.json({ error: `Could not start upload: ${error?.message ?? "unknown error"}` }, { status: 500 });
   }
   return NextResponse.json({ path: data.path, token: data.token });
 }
