@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { captureFrames, type Frame } from "@/lib/frames";
-import { buildMoments, drawOrder, formatTime } from "@/lib/moments";
-import type { Annotation, ClipAnalysis, Moment } from "@/lib/types";
+import { buildMoments, drawOrder, formatTime, toSeconds } from "@/lib/moments";
+import type { Annotation, Board, ClipAnalysis, Moment } from "@/lib/types";
+import { PitchBoard } from "./PitchBoard";
 import { TONE, Telestration } from "./Telestration";
 
 const MAX_BYTES = 50 * 1024 * 1024;
@@ -22,9 +23,11 @@ const KITS: Array<[string, string]> = [
   ["Green", "#16a34a"],
   ["Claret", "#7f1d3a"],
 ];
+const kitHex = (name: string, fallback: string) =>
+  KITS.find(([n]) => n.toLowerCase() === name.trim().toLowerCase())?.[1] ?? fallback;
 
 type Stage = "idle" | "uploading" | "watching" | "drawing" | "done";
-type Drawing = Annotation | "loading" | "error";
+type Async<T> = T | "loading" | "error";
 
 const KIND = {
   key: { label: "Key moment", color: TONE.info },
@@ -32,7 +35,9 @@ const KIND = {
   good: { label: "Done well", color: TONE.good },
 } as const;
 
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const card = "rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur";
+const BOARD_ASPECT = 74 / 111;
 
 export function ClipAnalyzer() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -48,15 +53,21 @@ export function ClipAnalyzer() {
   const [notes, setNotes] = useState("");
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   const [result, setResult] = useState<ClipAnalysis | null>(null);
   const [moments, setMoments] = useState<Moment[]>([]);
   const [frames, setFrames] = useState<Record<string, Frame>>({});
-  const [drawings, setDrawings] = useState<Record<string, Drawing>>({});
+  const [drawings, setDrawings] = useState<Record<string, Async<Annotation>>>({});
+  const [boards, setBoards] = useState<Record<string, Async<Board>>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
   const [overlay, setOverlay] = useState(false);
+  const [view, setView] = useState<"video" | "board">("video");
+  const [full, setFull] = useState(false);
   const [now, setNow] = useState(0);
-  const [dragging, setDragging] = useState(false);
+
+  // The context used for this run (so later 2D requests match the analysis).
+  const ctxRef = useRef({ myTeamColour: "", opponentColour: "" });
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
@@ -68,8 +79,11 @@ export function ClipAnalyzer() {
     setMoments([]);
     setFrames({});
     setDrawings({});
+    setBoards({});
     setActiveId(null);
     setOverlay(false);
+    setView("video");
+    setFull(false);
     setStage("idle");
   };
 
@@ -85,6 +99,34 @@ export function ClipAnalyzer() {
     setUrl(URL.createObjectURL(f));
   };
 
+  const post = async <T,>(path: string, body: unknown): Promise<T> => {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = (await r.json().catch(() => ({}))) as T & { error?: string };
+    if (!r.ok) throw new Error(j.error ?? `Request failed (${r.status})`);
+    return j;
+  };
+
+  // ── 2D board for one moment (key moment automatically, others on demand) ──
+  const requestBoard = useCallback(
+    async (m: Moment, frame?: Frame) => {
+      if (!url) return;
+      const id = runId.current;
+      setBoards((b) => ({ ...b, [m.id]: "loading" }));
+      try {
+        let f = frame;
+        if (!f) {
+          [f] = await captureFrames(url, [m.seconds]);
+          setFrames((fr) => ({ ...fr, [m.id]: f as Frame }));
+        }
+        const { board } = await post<{ board: Board }>("/api/annotate", { mode: "board", image: f.src, moment: m, ...ctxRef.current });
+        if (id === runId.current) setBoards((b) => ({ ...b, [m.id]: board }));
+      } catch {
+        if (id === runId.current) setBoards((b) => ({ ...b, [m.id]: "error" }));
+      }
+    },
+    [url],
+  );
+
   // ── Run: upload → analyse → capture frames → draw on each ──────────────
   const run = async () => {
     if (!file || !url || !supabase) return;
@@ -93,31 +135,29 @@ export function ClipAnalyzer() {
     setError(null);
     reset();
     const id = ++runId.current;
-    const headers = { "Content-Type": "application/json" };
+    const ctx = { myTeamColour: myColour, opponentColour: oppColour };
+    ctxRef.current = ctx;
     let analysed = false;
 
     try {
       setStage("uploading");
-      const r1 = await fetch("/api/upload-url", { method: "POST", headers, body: JSON.stringify({ type: file.type, size: file.size }) });
-      const j1 = (await r1.json()) as { path?: string; token?: string; error?: string };
-      if (!r1.ok || !j1.path || !j1.token) throw new Error(j1.error ?? "Could not start upload");
+      const j1 = await post<{ path: string; token: string }>("/api/upload-url", { type: file.type, size: file.size });
       const up = await supabase.storage.from("clips").uploadToSignedUrl(j1.path, j1.token, file, { contentType: file.type });
       if (up.error) throw new Error("Upload failed — check your connection and try again");
 
       setStage("watching");
-      const ctx = { myTeamColour: myColour, opponentColour: oppColour };
-      const r2 = await fetch("/api/analyse", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ path: j1.path, ...ctx, format, notes, durationSec: duration ?? undefined }),
+      const { analysis } = await post<{ analysis: ClipAnalysis }>("/api/analyse", {
+        path: j1.path,
+        ...ctx,
+        format,
+        notes,
+        durationSec: duration ?? undefined,
       });
-      const j2 = (await r2.json()) as { analysis?: ClipAnalysis; error?: string };
-      if (!r2.ok || !j2.analysis) throw new Error(j2.error ?? "Analysis failed");
       if (id !== runId.current) return;
 
-      const ms = buildMoments(j2.analysis, duration);
+      const ms = buildMoments(analysis, duration);
       analysed = true;
-      setResult(j2.analysis);
+      setResult(analysis);
       setMoments(ms);
       setStage("drawing");
 
@@ -126,8 +166,10 @@ export function ClipAnalyzer() {
       const shots = await captureFrames(url, toDraw.map((m) => m.seconds));
       if (id !== runId.current) return;
       setFrames(Object.fromEntries(toDraw.map((m, i) => [m.id, shots[i]])));
-      const first = toDraw[0];
-      if (first) select(first, false);
+      if (toDraw[0]) {
+        select(toDraw[0], false);
+        void requestBoard(toDraw[0], shots[0]);
+      }
 
       // Draw on frames, 3 at a time.
       let next = 0;
@@ -135,17 +177,11 @@ export function ClipAnalyzer() {
         while (next < toDraw.length) {
           const i = next++;
           const m = toDraw[i];
-          let d: Drawing = "error";
+          let d: Async<Annotation> = "error";
           try {
-            const r = await fetch("/api/annotate", {
-              method: "POST",
-              headers,
-              body: JSON.stringify({ image: shots[i].src, moment: m, ...ctx }),
-            });
-            const j = (await r.json()) as { annotation?: Annotation };
-            if (r.ok && j.annotation) d = j.annotation;
+            d = (await post<{ annotation: Annotation }>("/api/annotate", { image: shots[i].src, moment: m, ...ctx })).annotation;
           } catch {
-            /* marked as error below */
+            /* stays "error" */
           }
           if (id !== runId.current) return;
           setDrawings((prev) => ({ ...prev, [m.id]: d }));
@@ -168,40 +204,72 @@ export function ClipAnalyzer() {
     if (v) {
       v.pause();
       v.currentTime = m.seconds;
-      if (scroll && window.innerWidth < 1024) v.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (scroll && window.innerWidth < 1024) v.parentElement?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, []);
 
+  const seekTo = (s: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    setView("video");
+    v.pause();
+    v.currentTime = s;
+    if (window.innerWidth < 1024) v.parentElement?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
   const active = moments.find((m) => m.id === activeId) ?? null;
   const activeDrawing = active ? drawings[active.id] : undefined;
+  const activeBoard = active ? boards[active.id] : undefined;
   const idx = active ? moments.indexOf(active) : -1;
   const step = useCallback(
     (d: 1 | -1) => {
       if (moments.length === 0) return;
       const i = idx < 0 ? 0 : (idx + d + moments.length) % moments.length;
-      select(moments[i]);
+      select(moments[i], false);
     },
     [idx, moments, select],
   );
+
+  // Full screen: real fullscreen where supported, CSS takeover everywhere.
+  const enterFull = () => {
+    setFull(true);
+    document.documentElement.requestFullscreen?.().catch(() => undefined);
+  };
+  const exitFull = useCallback(() => {
+    setFull(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    const onChange = () => !document.fullscreenElement && setFull(false);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  useEffect(() => {
+    document.body.style.overflow = full ? "hidden" : "";
+  }, [full]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!result || (e.target as HTMLElement)?.closest("input,textarea,select")) return;
       if (e.key === "ArrowRight") step(1);
       if (e.key === "ArrowLeft") step(-1);
+      if (e.key === "Escape" && full) exitFull();
+      if (e.key.toLowerCase() === "f") (full ? exitFull() : enterFull());
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [result, step]);
+  }, [result, step, full, exitFull]);
 
   const busy = stage === "uploading" || stage === "watching";
-  const counts = useMemo(
+  const groups = useMemo(
     () => ({
-      error: moments.filter((m) => m.kind === "error").length,
-      good: moments.filter((m) => m.kind === "good").length,
+      wrong: moments.filter((m) => m.kind !== "good").sort((a, b) => (a.kind === "key" ? -1 : b.kind === "key" ? 1 : a.seconds - b.seconds)),
+      good: moments.filter((m) => m.kind === "good"),
     }),
     [moments],
   );
+  const usColor = kitHex(myColour, "#ef4444");
+  const themColor = kitHex(oppColour, usColor === "#2563eb" ? "#ef4444" : "#2563eb");
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 pb-16">
@@ -217,7 +285,7 @@ export function ClipAnalyzer() {
           </span>
           <div>
             <h1 className="text-lg font-extrabold tracking-tight">Clip Analysis</h1>
-            <p className="text-[12px] text-ink-400">AI telestration for your match footage</p>
+            <p className="text-[12px] text-ink-400">AI match review · telestration · 2D tactics</p>
           </div>
         </div>
         {result && (
@@ -330,111 +398,194 @@ export function ClipAnalyzer() {
 
       {result && url && (
         <div className="grid gap-5 lg:grid-cols-[1.45fr_1fr]">
-          {/* Player + timeline */}
-          <div className="space-y-4 lg:sticky lg:top-4 lg:self-start">
-            <div className={`${card} overflow-hidden`}>
-              <div className="relative">
-                <video
-                  ref={videoRef}
-                  src={url}
-                  controls
-                  playsInline
-                  className="block w-full bg-black"
-                  onPlay={() => setOverlay(false)}
-                  onTimeUpdate={(e) => {
-                    const t = e.currentTarget.currentTime;
-                    setNow(t);
-                    if (overlay && active && Math.abs(t - active.seconds) > 0.35) setOverlay(false);
-                  }}
-                  onLoadedMetadata={(e) => {
-                    setDuration(e.currentTarget.duration);
-                    setAspect(e.currentTarget.videoWidth / e.currentTarget.videoHeight || 16 / 9);
-                  }}
-                />
-                {overlay && activeDrawing && typeof activeDrawing === "object" && (
-                  <Telestration key={active?.id} shapes={activeDrawing.shapes} aspect={aspect} />
-                )}
-                {active && overlay && (
-                  <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-lg bg-black/70 px-2.5 py-1 text-[12px] font-bold backdrop-blur">
-                    <span className="h-2 w-2 rounded-full" style={{ background: KIND[active.kind].color }} />
-                    {active.headline}
-                    {activeDrawing === "loading" && <span className="text-ink-400">· drawing…</span>}
-                  </div>
+          {/* ── Viewer ── */}
+          <div className={full ? "relative z-50" : "space-y-3 lg:sticky lg:top-4 lg:self-start"}>
+            <div className={full ? "fixed inset-0 z-50 flex flex-col bg-[#05070b]" : `${card} overflow-hidden`}>
+              {/* Top bar */}
+              <div className={`flex items-center justify-between gap-3 px-3 ${full ? "h-14 border-b border-white/10" : "py-2.5"}`}>
+                <div className="flex min-w-0 items-center gap-2">
+                  {active ? (
+                    <>
+                      <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: KIND[active.kind].color }} />
+                      <span className="truncate text-[13px] font-extrabold">{active.headline}</span>
+                      <span className="shrink-0 font-mono text-[12px] text-ink-400">{formatTime(active.seconds)}</span>
+                    </>
+                  ) : (
+                    <span className="text-[13px] font-bold text-ink-400">Pick a moment</span>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Segmented
+                    value={view}
+                    onChange={(v) => {
+                      setView(v);
+                      if (v === "board" && active && !activeBoard) void requestBoard(active, frames[active.id]);
+                    }}
+                    options={[
+                      ["video", "Video"],
+                      ["board", "2D"],
+                    ]}
+                  />
+                  <IconBtn onClick={full ? exitFull : enterFull} label={full ? "Exit full screen" : "Full screen"}>
+                    {full ? <CollapseIcon /> : <ExpandIcon />}
+                  </IconBtn>
+                </div>
+              </div>
+
+              {/* Stage */}
+              <div className={full ? "flex min-h-0 flex-1 items-center justify-center p-3" : ""}>
+                <div
+                  className={`relative ${view === "video" ? "" : "hidden"}`}
+                  style={full ? { width: `min(100%, calc((100vh - 190px) * ${aspect}))` } : undefined}
+                >
+                  <video
+                    ref={videoRef}
+                    src={url}
+                    controls
+                    playsInline
+                    className="block w-full bg-black"
+                    onPlay={() => setOverlay(false)}
+                    onTimeUpdate={(e) => {
+                      const t = e.currentTarget.currentTime;
+                      setNow(t);
+                      if (overlay && active && Math.abs(t - active.seconds) > 0.35) setOverlay(false);
+                    }}
+                    onLoadedMetadata={(e) => {
+                      setDuration(e.currentTarget.duration);
+                      setAspect(e.currentTarget.videoWidth / e.currentTarget.videoHeight || 16 / 9);
+                    }}
+                  />
+                  {overlay && activeDrawing && typeof activeDrawing === "object" && (
+                    <Telestration key={active?.id} shapes={activeDrawing.shapes} avoid={activeDrawing.avoid} />
+                  )}
+                  {overlay && activeDrawing === "loading" && (
+                    <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-black/70 px-2 py-1 text-[11px] font-bold text-ink-300">Drawing…</span>
+                  )}
+                </div>
+
+                {view === "board" && (
+                  <BoardView
+                    state={activeBoard}
+                    full={full}
+                    usColor={usColor}
+                    themColor={themColor}
+                    showDistances={format === "11v11"}
+                    myLabel={myColour}
+                    oppLabel={oppColour || "Opponent"}
+                    onRetry={() => active && void requestBoard(active, frames[active.id])}
+                  />
                 )}
               </div>
-              <Timeline moments={moments} duration={duration ?? 0} now={now} activeId={activeId} onSelect={select} />
-              <div className="flex items-center justify-between gap-2 border-t border-white/5 px-3 py-2.5">
+
+              {/* Timeline + controls */}
+              <Timeline moments={moments} duration={duration ?? 0} now={now} activeId={activeId} onSelect={(m) => select(m, false)} />
+              <div className={`flex items-center justify-between gap-2 border-t border-white/5 px-3 py-2.5 ${full ? "pb-4" : ""}`}>
                 <div className="flex gap-1.5">
                   <IconBtn onClick={() => step(-1)} label="Previous moment">‹</IconBtn>
                   <IconBtn onClick={() => step(1)} label="Next moment">›</IconBtn>
                 </div>
-                <p className="hidden text-[11px] text-ink-500 sm:block">← → to jump between moments</p>
+                <p className="hidden min-w-0 flex-1 truncate px-2 text-center text-[12px] italic text-ink-400 sm:block">
+                  {view === "video" && activeDrawing && typeof activeDrawing === "object" ? activeDrawing.caption : "← → moments · F full screen"}
+                </p>
                 <button
                   type="button"
                   onClick={() => setOverlay((o) => !o)}
-                  disabled={!active}
-                  className={`rounded-lg px-3 py-1.5 text-[12px] font-bold transition ${overlay ? "bg-white text-black" : "bg-white/5 text-ink-300"}`}
+                  disabled={!active || view !== "video"}
+                  className={`rounded-lg px-3 py-1.5 text-[12px] font-bold transition disabled:opacity-40 ${overlay ? "bg-white text-black" : "bg-white/5 text-ink-300"}`}
                 >
                   Drawings {overlay ? "on" : "off"}
                 </button>
               </div>
             </div>
-
-            {active && activeDrawing && typeof activeDrawing === "object" && activeDrawing.caption && (
-              <p className="px-1 text-[13px] italic text-ink-300">{activeDrawing.caption}</p>
+            {!full && view === "video" && activeDrawing && typeof activeDrawing === "object" && activeDrawing.caption && (
+              <p className="px-1 text-[13px] italic text-ink-400 sm:hidden">{activeDrawing.caption}</p>
             )}
-
-            <div className={`${card} space-y-3 p-5`}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Pill color={TONE.error}>{counts.error} {counts.error === 1 ? "mistake" : "mistakes"}</Pill>
-                <Pill color={TONE.good}>{counts.good} done well</Pill>
-                {stage === "drawing" && <span className="text-[12px] text-ink-400">Drawing on frames…</span>}
-              </div>
-              <h2 className="text-xl font-extrabold leading-snug tracking-tight">{result.outcome}</h2>
-              <p className="text-[14px] leading-relaxed text-ink-300">{result.summary}</p>
-            </div>
           </div>
 
-          {/* Moments */}
-          <div className="space-y-3">
+          {/* ── Review ── */}
+          <div className="space-y-5">
             {error && <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-[13px] text-red-200">{error}</p>}
-            {moments.map((m) => (
-              <MomentCard
-                key={m.id}
-                m={m}
-                frame={frames[m.id]}
-                drawing={drawings[m.id]}
-                aspect={aspect}
-                active={m.id === activeId}
-                onClick={() => select(m)}
-              />
-            ))}
+
+            <section className={`${card} overflow-hidden`}>
+              <div className="h-1 bg-gradient-to-r from-[#ff4d5e] via-[#ffd23f] to-[#22e39a]" />
+              <div className="space-y-3 p-5">
+                <p className="text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#ff8a95]">Verdict</p>
+                <h2 className="text-[19px] font-extrabold leading-snug tracking-tight">{result.verdict || result.outcome}</h2>
+                <p className="text-[13px] font-semibold text-ink-300">{result.outcome}</p>
+                <p className="text-[14px] leading-relaxed text-ink-300">{result.summary}</p>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <Pill color={TONE.error}>{plural(groups.wrong.filter((m) => m.kind === "error").length, "mistake")}</Pill>
+                  <Pill color={TONE.good}>{groups.good.length} done well</Pill>
+                  <Pill color="#38bdf8">{plural(result.prevention?.length ?? 0, "way", "ways")} to prevent</Pill>
+                  {stage === "drawing" && <span className="self-center text-[12px] text-ink-400">Drawing on frames…</span>}
+                </div>
+              </div>
+            </section>
+
+            <Section title="What went wrong" color={TONE.error}>
+              {groups.wrong.map((m) => (
+                <MomentCard key={m.id} m={m} frame={frames[m.id]} drawing={drawings[m.id]} active={m.id === activeId} onClick={() => (setView("video"), select(m))} onExpand={() => (setView("video"), select(m, false), enterFull())} />
+              ))}
+            </Section>
+
+            {groups.good.length > 0 && (
+              <Section title="What went well" color={TONE.good}>
+                {groups.good.map((m) => (
+                  <MomentCard key={m.id} m={m} frame={frames[m.id]} drawing={drawings[m.id]} active={m.id === activeId} onClick={() => (setView("video"), select(m))} onExpand={() => (setView("video"), select(m, false), enterFull())} />
+                ))}
+              </Section>
+            )}
+
+            {(result.prevention?.length ?? 0) > 0 && (
+              <Section title="How it could have been prevented" color="#38bdf8">
+                <ol className={`${card} divide-y divide-white/5`}>
+                  {result.prevention.map((p, i) => {
+                    const s = toSeconds(p.time);
+                    return (
+                      <li key={i} className="flex gap-3 p-4">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-400/15 text-[12px] font-extrabold text-sky-300">{i + 1}</span>
+                        <div className="min-w-0">
+                          <div className="mb-0.5 flex flex-wrap items-center gap-2">
+                            {s != null && (
+                              <button type="button" onClick={() => seekTo(s)} className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[11px] font-bold text-sky-300 hover:bg-white/10">
+                                {formatTime(s)}
+                              </button>
+                            )}
+                            <span className="text-[12px] font-bold text-ink-300">{p.who}</span>
+                          </div>
+                          <p className="text-[14px] font-semibold leading-snug">{p.action}</p>
+                          <p className="mt-1 text-[13px] leading-relaxed text-ink-400">{p.impact}</p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </Section>
+            )}
 
             {result.coaching_points.length > 0 && (
-              <section className={`${card} p-5`}>
-                <h3 className="mb-3 text-[13px] font-bold uppercase tracking-wider text-ink-400">Coaching points</h3>
-                <ol className="space-y-2.5">
+              <Section title="Coaching points" color="#a78bfa">
+                <ol className={`${card} space-y-2.5 p-4`}>
                   {result.coaching_points.map((p, i) => (
                     <li key={i} className="flex gap-3 text-[14px] leading-relaxed text-ink-200">
-                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand/15 text-[12px] font-extrabold text-brand">{i + 1}</span>
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-400/15 text-[12px] font-extrabold text-violet-300">{i + 1}</span>
                       {p}
                     </li>
                   ))}
                 </ol>
-              </section>
+              </Section>
             )}
 
             {result.unclear.length > 0 && (
-              <section className={`${card} p-5`}>
-                <h3 className="mb-2 text-[13px] font-bold uppercase tracking-wider text-ink-400">Couldn&apos;t judge from the footage</h3>
-                <ul className="list-disc space-y-1 pl-5 text-[13px] text-ink-400">
+              <Section title="Couldn't judge from the footage" color="#5a6172">
+                <ul className={`${card} list-disc space-y-1 p-4 pl-8 text-[13px] text-ink-400`}>
                   {result.unclear.map((p, i) => (
                     <li key={i}>{p}</li>
                   ))}
                 </ul>
-              </section>
+              </Section>
             )}
-            <p className="pt-1 text-center text-[11px] text-ink-500">AI analysis — check each point against the video.</p>
+            <p className="text-center text-[11px] text-ink-500">AI analysis — check each point against the video. 2D boards are approximate.</p>
           </div>
         </div>
       )}
@@ -443,6 +594,76 @@ export function ClipAnalyzer() {
 }
 
 // ── Pieces ─────────────────────────────────────────────────────────────────
+
+function BoardView({
+  state,
+  full,
+  usColor,
+  themColor,
+  showDistances,
+  myLabel,
+  oppLabel,
+  onRetry,
+}: {
+  state?: Async<Board>;
+  full: boolean;
+  usColor: string;
+  themColor: string;
+  showDistances: boolean;
+  myLabel: string;
+  oppLabel: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className={`flex flex-col items-center gap-2 ${full ? "h-full w-full justify-center" : "bg-black/30 px-3 py-4"}`}>
+      <div
+        className="relative"
+        style={full ? { height: "calc(100vh - 220px)", aspectRatio: String(BOARD_ASPECT) } : { width: `min(100%, calc(62vh * ${BOARD_ASPECT}))`, aspectRatio: String(BOARD_ASPECT) }}
+      >
+        {state && typeof state === "object" ? (
+          <PitchBoard board={state} usColor={usColor} themColor={themColor} showDistances={showDistances} />
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-lg bg-[#266a29]/40 text-center">
+            {state === "error" ? (
+              <>
+                <p className="text-[13px] text-ink-300">Couldn&apos;t build the 2D view.</p>
+                <button type="button" onClick={onRetry} className="rounded-lg bg-white px-3 py-1.5 text-[12px] font-bold text-black">
+                  Try again
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="h-8 w-8 animate-spin rounded-full border-2 border-brand border-t-transparent" />
+                <p className="text-[13px] text-ink-300">Building 2D view…</p>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-3 text-[11px] text-ink-400">
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full border border-white" style={{ background: usColor }} /> {myLabel || "Us"}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="h-2.5 w-2.5 rounded-full border border-white" style={{ background: themColor }} /> {oppLabel}
+        </span>
+        <span>Our goal at the bottom · approximate, from one camera frame{showDistances ? " · distances assume 105×68m" : ""}</span>
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, color, children }: { title: string; color: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2.5">
+      <h3 className="flex items-center gap-2 px-1 text-[12px] font-extrabold uppercase tracking-[0.14em] text-ink-300">
+        <span className="h-3 w-1 rounded-full" style={{ background: color }} />
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
 
 function KitPicker({ label, value, onChange, required }: { label: string; value: string; onChange: (v: string) => void; required?: boolean }) {
   return (
@@ -531,7 +752,7 @@ function Timeline({
 }) {
   if (!duration) return null;
   return (
-    <div className="relative mx-4 my-4 h-6">
+    <div className="relative mx-4 my-3 h-6">
       <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/10" />
       <div className="absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/30" style={{ width: `${(now / duration) * 100}%` }} />
       {moments.map((m) => (
@@ -540,7 +761,7 @@ function Timeline({
           type="button"
           title={`${formatTime(m.seconds)} · ${m.headline}`}
           onClick={() => onSelect(m)}
-          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-ink-950 transition hover:scale-125 ${
+          className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#05070b] transition hover:scale-125 ${
             m.id === activeId ? "h-5 w-5 ring-2 ring-white" : "h-3.5 w-3.5"
           }`}
           style={{ left: `${(m.seconds / duration) * 100}%`, background: KIND[m.kind].color }}
@@ -554,37 +775,49 @@ function MomentCard({
   m,
   frame,
   drawing,
-  aspect,
   active,
   onClick,
+  onExpand,
 }: {
   m: Moment;
   frame?: Frame;
-  drawing?: Drawing;
-  aspect: number;
+  drawing?: Async<Annotation>;
   active: boolean;
   onClick: () => void;
+  onExpand: () => void;
 }) {
   const k = KIND[m.kind];
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className={`${card} group flex w-full gap-4 p-3 text-left transition hover:bg-white/[0.06] ${active ? "border-white/30 bg-white/[0.07]" : ""}`}
+      onKeyDown={(e) => e.key === "Enter" && onClick()}
+      className={`${card} group flex w-full cursor-pointer flex-col gap-3 p-3 text-left transition hover:bg-white/[0.06] ${active ? "border-white/25 bg-white/[0.07]" : ""}`}
       style={active ? { boxShadow: `inset 3px 0 0 ${k.color}` } : undefined}
     >
       {drawing && (
-        <div className="relative w-36 shrink-0 overflow-hidden rounded-xl bg-black sm:w-44" style={{ aspectRatio: String(frame ? frame.w / frame.h : aspect) }}>
+        <div className="relative w-full overflow-hidden rounded-xl bg-black" style={{ aspectRatio: String(frame ? frame.w / frame.h : 16 / 9) }}>
           {frame && (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={frame.src} alt="" className="absolute inset-0 h-full w-full object-cover" />
           )}
-          {frame && typeof drawing === "object" && <Telestration shapes={drawing.shapes} aspect={frame.w / frame.h} compact />}
+          {frame && typeof drawing === "object" && <Telestration shapes={drawing.shapes} compact />}
           {drawing === "loading" && <div className="shimmer absolute inset-0 bg-white/[0.03]" />}
-          <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[11px] font-bold">{formatTime(m.seconds)}</span>
+          <span className="absolute bottom-1 left-1 rounded bg-black/75 px-1.5 py-0.5 font-mono text-[11px] font-bold">{formatTime(m.seconds)}</span>
+          {typeof drawing === "object" && (
+            <button
+              type="button"
+              aria-label="Open full screen"
+              onClick={(e) => (e.stopPropagation(), onExpand())}
+              className="absolute right-1 top-1 flex h-7 w-7 items-center justify-center rounded-md bg-black/70 text-white opacity-90 transition hover:bg-black group-hover:opacity-100"
+            >
+              <ExpandIcon />
+            </button>
+          )}
         </div>
       )}
-      <div className="min-w-0 flex-1 py-0.5">
+      <div className="min-w-0 px-1 pb-1">
         <div className="mb-1 flex flex-wrap items-center gap-2">
           <span className="text-[11px] font-extrabold uppercase tracking-wider" style={{ color: k.color }}>
             {k.label}
@@ -604,7 +837,24 @@ function MomentCard({
           </p>
         )}
       </div>
-    </button>
+    </div>
+  );
+}
+
+function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: Array<[T, string]> }) {
+  return (
+    <div className="flex rounded-lg bg-white/5 p-0.5">
+      {options.map(([v, label]) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onChange(v)}
+          className={`rounded-md px-2.5 py-1 text-[12px] font-bold transition ${value === v ? "bg-white text-black" : "text-ink-300 hover:text-white"}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -619,8 +869,19 @@ function Pill({ color, children }: { color: string; children: React.ReactNode })
 
 function IconBtn({ onClick, label, children }: { onClick: () => void; label: string; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} aria-label={label} className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-lg font-bold text-ink-200 hover:bg-white/10">
+    <button type="button" onClick={onClick} aria-label={label} title={label} className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/5 text-lg font-bold text-ink-200 hover:bg-white/10">
       {children}
     </button>
   );
 }
+
+const ExpandIcon = () => (
+  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+  </svg>
+);
+const CollapseIcon = () => (
+  <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+  </svg>
+);

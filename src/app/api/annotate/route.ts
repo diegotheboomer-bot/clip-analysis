@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { annotateFrame } from "@/lib/gemini";
+import { annotateFrame, boardFrame } from "@/lib/gemini";
 import type { Moment } from "@/lib/types";
 
-// One still frame (captured in the browser at a moment's timestamp) → telestration shapes.
+// One still frame (captured in the browser at a moment's timestamp) →
+// telestration shapes (mode "draw", default) or a 2D tactics board (mode "board").
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -29,11 +30,9 @@ export async function POST(request: Request) {
   if (!moment.detail || !myTeamColour) return NextResponse.json({ error: "Missing moment" }, { status: 400 });
 
   try {
-    const annotation = await annotateFrame(m[2], m[1], moment, {
-      myTeamColour,
-      opponentColour: str(body.opponentColour, 40) || undefined,
-    });
-    return NextResponse.json({ annotation });
+    const ctx = { myTeamColour, opponentColour: str(body.opponentColour, 40) || undefined };
+    if (body.mode === "board") return NextResponse.json({ board: await boardFrame(m[2], m[1], moment, ctx) });
+    return NextResponse.json({ annotation: await annotateFrame(m[2], m[1], moment, ctx) });
   } catch (e) {
     console.error("annotate error", e);
     const msg = e instanceof Error ? e.message : String(e);
