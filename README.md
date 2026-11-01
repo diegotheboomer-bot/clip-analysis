@@ -8,9 +8,12 @@ Next.js 14 · Gemini API (video understanding) · Supabase Storage.
 
 ## How it works
 
-browser → Supabase Storage (signed upload, since Vercel caps request bodies at ~4.5 MB)
-→ `/api/analyse` → Gemini Files API → structured JSON. The clip is deleted from
-Supabase and Gemini straight after.
+1. browser → Supabase Storage (signed upload, since Vercel caps request bodies at ~4.5 MB)
+   → `/api/analyse` → Gemini watches the clip → timestamped breakdown. The clip is
+   deleted from Supabase and Gemini straight after.
+2. The browser grabs a still frame at each moment and sends it to `/api/annotate`;
+   Gemini returns telestration shapes (player rings, arrows, lines, open zones) on its
+   0-1000 coordinate grid, which are drawn over the paused video and the moment cards.
 
 There is no login: anyone who can reach the app can use your Gemini credits, so
 add protection before hosting it publicly.

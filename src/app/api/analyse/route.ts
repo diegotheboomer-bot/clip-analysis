@@ -6,8 +6,8 @@ import {
   deleteGeminiFile,
   uploadToGemini,
   waitUntilActive,
-  type ClipContext,
 } from "@/lib/gemini";
+import type { ClipContext } from "@/lib/types";
 
 // Storage → Gemini Files API → wait for processing → structured analysis.
 export const runtime = "nodejs";
