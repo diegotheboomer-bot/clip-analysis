@@ -44,3 +44,32 @@ export async function captureFrames(url: string, times: number[], maxW = 1920): 
   v.load();
   return out;
 }
+
+// Draw a number above every detected person (Set-of-Mark), so the reasoning
+// model can pick players by number instead of guessing coordinates.
+export async function markFrame(frame: Frame, boxes: Array<[number, number, number, number]>): Promise<string> {
+  const img = new Image();
+  img.src = frame.src;
+  await img.decode();
+  const c = document.createElement("canvas");
+  c.width = frame.w;
+  c.height = frame.h;
+  const ctx = c.getContext("2d");
+  if (!ctx) return frame.src;
+  ctx.drawImage(img, 0, 0);
+  const fs = Math.max(13, Math.round(frame.h / 46));
+  ctx.font = `800 ${fs}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  boxes.forEach(([y0, x0, , x1], i) => {
+    const x = ((x0 + x1) / 2 / 1000) * frame.w;
+    const y = (y0 / 1000) * frame.h - fs * 0.9;
+    const label = String(i);
+    const w = ctx.measureText(label).width + fs * 0.6;
+    ctx.fillStyle = "rgba(0,0,0,0.75)";
+    ctx.fillRect(x - w / 2, y - fs * 0.62, w, fs * 1.24);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(label, x, y + 1);
+  });
+  return c.toDataURL("image/jpeg", 0.9);
+}

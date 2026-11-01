@@ -14,6 +14,7 @@ export interface GoodPoint {
   who: string;
   what: string;
   why: string;
+  confidence?: "high" | "medium" | "low";
 }
 
 export interface Cause {
@@ -23,6 +24,7 @@ export interface Cause {
   what_went_wrong: string;
   what_should_have_happened: string;
   severity: "major" | "minor";
+  confidence?: "high" | "medium" | "low";
 }
 
 export interface Prevention {
@@ -65,27 +67,17 @@ export interface Shape {
 export type Box = [number, number, number, number]; // [ymin, xmin, ymax, xmax]
 
 export interface Annotation {
+  // Did the frame back up the claim? "contradicted" claims are hidden.
+  check: { status: "supported" | "not_visible" | "contradicted"; note: string };
   caption: string;
   shapes: Shape[];
   avoid: Box[]; // every visible player/ball — labels stay clear of these
 }
 
-// ── 2D board ─────────────────────────────────────────────────────────────
-// 0-100 pitch coords from the analysed team's view: y=0 own goal line,
-// y=100 opponent's goal line, x=0 left touchline.
-
-export interface BoardPt {
-  x: number;
-  y: number;
-}
-export type BoardTone = Tone | "none";
-
-export interface Board {
-  players: Array<BoardPt & { team: "us" | "them"; tone: BoardTone }>;
-  ball?: BoardPt;
-  lines: Array<{ label: string; tone: BoardTone; points: BoardPt[] }>;
-  arrows: Array<{ label: string; tone: BoardTone; from: BoardPt; to: BoardPt }>;
-  zones: Array<{ label: string; tone: BoardTone; points: BoardPt[] }>;
+// What the detector found on a frame.
+export interface Detection {
+  ball: Box | null;
+  people: Array<{ box: Box; team: "us" | "them" | "keeper" | "referee" | "unknown" }>;
 }
 
 // A moment on the timeline, built from the analysis on the client.

@@ -1,22 +1,18 @@
 import { NextResponse } from "next/server";
-import { annotateFrame, boardFrame } from "@/lib/gemini";
+import { annotateFrame } from "@/lib/gemini";
+import { parseDetection, parseFrame, str } from "@/lib/frameRequest";
 import type { Moment } from "@/lib/types";
 
-// One still frame (captured in the browser at a moment's timestamp) →
-// telestration shapes (mode "draw", default) or a 2D tactics board (mode "board").
+// A frame with every detected person numbered on it + the detection itself →
+// a check of the claim against the frame, and telestration shapes.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
-
-const MAX_IMAGE_CHARS = 4_000_000; // ~3 MB of base64 — keeps under Vercel's body cap
-
-const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+export const maxDuration = 120;
 
 export async function POST(request: Request) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-  const image = str(body.image, MAX_IMAGE_CHARS + 100);
-  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(image);
-  if (!m || m[2].length > MAX_IMAGE_CHARS) return NextResponse.json({ error: "Invalid frame" }, { status: 400 });
+  const frame = parseFrame(body.image);
+  if (!frame) return NextResponse.json({ error: "Invalid frame" }, { status: 400 });
 
   const raw = (body.moment ?? {}) as Partial<Moment>;
   const moment = {
@@ -30,15 +26,14 @@ export async function POST(request: Request) {
   if (!moment.detail || !myTeamColour) return NextResponse.json({ error: "Missing moment" }, { status: 400 });
 
   try {
-    const ctx = { myTeamColour, opponentColour: str(body.opponentColour, 40) || undefined };
-    if (body.mode === "board") return NextResponse.json({ board: await boardFrame(m[2], m[1], moment, ctx) });
-    return NextResponse.json({ annotation: await annotateFrame(m[2], m[1], moment, ctx) });
+    const annotation = await annotateFrame(frame.data, frame.mime, parseDetection(body.detection), moment, {
+      myTeamColour,
+      opponentColour: str(body.opponentColour, 40) || undefined,
+    });
+    return NextResponse.json({ annotation });
   } catch (e) {
     console.error("annotate error", e);
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json(
-      { error: msg.includes("(429)") ? "Rate limited — try again in a minute" : "Couldn't draw this frame" },
-      { status: 502 },
-    );
+    return NextResponse.json({ error: msg.includes("(429)") ? "Rate limited — try again in a minute" : "Couldn't draw this frame" }, { status: 502 });
   }
 }

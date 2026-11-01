@@ -1,19 +1,19 @@
 // ──────────────────────────────────────────────────────────────────────────
 // Gemini — SERVER ONLY.
 //
-// 1. analyseClip: watches the whole clip (Files API) and returns a structured
-//    coaching breakdown with timestamps.
-// 2. annotateFrame: takes a still frame at one of those timestamps and returns
-//    telestration shapes (player rings, arrows, lines, open zones) in Gemini's
-//    native 0-1000 coordinates, which the UI draws over the video.
+// 1. analyseClip: watches the whole clip (Files API) and returns a structured,
+//    timestamped coaching review. Low-confidence claims are moved to
+//    "unclear" instead of being presented as fact.
+// 2. detectFrame: a spatial model finds the ball and every person on a frame.
+// 3. annotateFrame: the reasoning model sees the frame with every detected
+//    person NUMBERED on it, checks the claim against the frame, and picks
+//    players by number. Coordinates come from the detector, never guessed.
 // ──────────────────────────────────────────────────────────────────────────
 
 import "server-only";
-import type { Annotation, Board, BoardPt, BoardTone, Box, ClipAnalysis, ClipContext, Moment, Shape } from "./types";
+import type { Annotation, Box, ClipAnalysis, ClipContext, Detection, Moment, Pt, Shape, Tone } from "./types";
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY ?? "";
-// Strongest model for the tactical reasoning + drawing; a fast spatial model
-// (built for pointing/detection) to find the ball and players on each frame.
 export const MODEL = process.env.GEMINI_ANALYSIS_MODEL ?? "gemini-4-argon";
 export const DETECT_MODEL = process.env.GEMINI_DETECT_MODEL ?? "gemini-robotics-er-2-preview";
 const BASE = "https://generativelanguage.googleapis.com";
@@ -122,13 +122,18 @@ export async function deleteGeminiFile(name: string): Promise<void> {
 const S = (description: string) => ({ type: "STRING", description });
 const TIME = S("Timestamp in the clip as MM:SS.s (tenths), e.g. 00:07.4 — the exact frame that best shows it.");
 const HEADLINE = S("Punchy 3-6 word title, e.g. 'CB fails to step out'.");
-const WHO = S("Player or unit, by kit colour + position (+ number only if clearly readable).");
+const WHO = S("Player or unit, by kit colour + position on the pitch (+ number only if clearly readable).");
+const CONFIDENCE = {
+  type: "STRING",
+  enum: ["high", "medium", "low"],
+  description: "high = clearly visible and unambiguous; medium = visible but partly obscured or a judgement call; low = guess.",
+};
 
 const ANALYSIS_SCHEMA = {
   type: "OBJECT",
   properties: {
     outcome: S("One line: what happens in the clip, e.g. 'Goal conceded from a cut-back after a turnover'."),
-    verdict: S("One sentence: THE main reason the goal was conceded (or the sequence went wrong)."),
+    verdict: S("One sentence: THE main reason the goal was conceded (or the sequence went wrong). Only what the footage clearly shows."),
     summary: S("3-5 sentence tactical summary of the sequence from the analysed team's point of view."),
     key_moment: {
       type: "OBJECT",
@@ -144,10 +149,11 @@ const ANALYSIS_SCHEMA = {
           headline: HEADLINE,
           who: WHO,
           what_went_wrong: S("The specific error or tactical problem."),
-          what_should_have_happened: S("The correct decision or positioning."),
+          what_should_have_happened: S("The correct decision or positioning — only something this player could realistically have done from where they were."),
           severity: { type: "STRING", enum: ["major", "minor"] },
+          confidence: CONFIDENCE,
         },
-        required: ["time", "headline", "who", "what_went_wrong", "what_should_have_happened", "severity"],
+        required: ["time", "headline", "who", "what_went_wrong", "what_should_have_happened", "severity", "confidence"],
       },
     },
     done_well: {
@@ -160,13 +166,14 @@ const ANALYSIS_SCHEMA = {
           who: WHO,
           what: S("What was done well."),
           why: S("Why it matters tactically."),
+          confidence: CONFIDENCE,
         },
-        required: ["time", "headline", "who", "what", "why"],
+        required: ["time", "headline", "who", "what", "why", "confidence"],
       },
     },
     prevention: {
       type: "ARRAY",
-      description: "How the goal could have been prevented: the chain of interventions, earliest first.",
+      description: "How the goal could have been prevented: the chain of realistic interventions, earliest first.",
       items: {
         type: "OBJECT",
         properties: {
@@ -186,20 +193,23 @@ const ANALYSIS_SCHEMA = {
 
 const ANALYSIS_SYSTEM = `You are an elite football (soccer) video analyst and UEFA Pro Licence coach reviewing amateur match footage, usually from a Veo camera (wide, elevated, auto-panning).
 
-Analyse the clip from the point of view of the team the user names (the "analysed team"). Look closely at:
+Analyse the clip from the point of view of the team the user names (the "analysed team"). Look at:
 - Defensive line: height, flatness/stagger, stepping up vs dropping, offside trap, distances between centre-backs and between full-back and centre-back.
-- Shape & compactness: distances between lines (defence-midfield-attack), horizontal compactness, ball-side overload, cover and balance.
-- Individual defending: pressure on the ball, body shape, showing inside/outside, tracking runners, ball-watching, when a centre-back should step out or hold.
+- Shape & compactness: distances between lines, horizontal compactness, ball-side overload, cover and balance.
+- Individual defending: pressure on the ball, body shape, tracking runners, ball-watching, when a centre-back should step out or hold.
 - Transitions: rest-defence before losing the ball, counter-press or recovery runs after it.
-- Goalkeeper: starting position, angle, set position at the shot, decision to come or stay, handling, communication/organisation.
+- Goalkeeper: starting position, angle, set position at the shot, decision to come or stay, handling, communication.
 - The attack: how the opponent created and finished the chance.
 
-Rules:
-- Every point MUST have a precise timestamp (MM:SS.s) of the frame that best shows it — these frames get drawn on.
-- Only describe what is actually visible. Never invent shirt numbers or names; refer to players by kit colour and position (e.g. "blue left centre-back"). Use a number only if clearly readable.
-- If something can't be judged (out of frame, camera angle, blur), put it in "unclear" instead of guessing.
-- Be honest and specific, like a coach in a video session. Credit good actions even in a goal conceded — a complete review lists what went well as well as what went wrong.
-- "prevention" walks back through the move: every point where one of the analysed team's players could have stopped it (press, cover, track, step up, block, save).
+ACCURACY RULES — these matter more than anything else:
+- Only state what you can actually see. A wrong claim is far worse than a missing one.
+- Before blaming a player, check they were close enough to affect the play AT THAT MOMENT. Footage is a 2D view from an elevated camera: players who look close can be far apart in depth, and vice versa. Use pitch markings to judge depth. Never blame a player who was far away or could not realistically have reached the ball/runner in time — say whose zone it was instead, or put it in "unclear".
+- Do not assume positions, distances or roles you cannot confirm. Never state distances in metres.
+- Never invent shirt numbers or names; refer to players by kit colour and position (e.g. "blue left centre-back"). Use a number only if clearly readable.
+- Set "confidence" honestly. If a point is a guess, mark it low.
+- Every point MUST have a precise timestamp (MM:SS.s) of the frame that best shows it.
+- Be specific, like a coach in a video session. Credit good actions too.
+- "prevention" walks back through the move: realistic points where one of the analysed team's players could have stopped it.
 - If the clip does not show a goal conceded, still analyse the sequence; "goal_causes" then lists what went wrong defensively (or is empty).`;
 
 export async function analyseClip(file: GeminiFile, ctx: ClipContext): Promise<ClipAnalysis> {
@@ -213,20 +223,102 @@ export async function analyseClip(file: GeminiFile, ctx: ClipContext): Promise<C
     "Break down this clip.",
   ].filter(Boolean);
 
-  return generateJson<ClipAnalysis>(
+  const a = await generateJson<ClipAnalysis>(
     [{ fileData: { fileUri: file.uri, mimeType: file.mimeType }, videoMetadata: { fps } }, { text: lines.join("\n") }],
     ANALYSIS_SYSTEM,
     ANALYSIS_SCHEMA,
   );
+
+  // Don't present guesses as findings: low-confidence points go to "unclear".
+  const unsure = [
+    ...a.goal_causes.filter((c) => c.confidence === "low").map((c) => `Possible but uncertain (${c.time}): ${c.who} — ${c.what_went_wrong}`),
+    ...a.done_well.filter((d) => d.confidence === "low").map((d) => `Possible but uncertain (${d.time}): ${d.who} — ${d.what}`),
+  ];
+  return {
+    ...a,
+    goal_causes: a.goal_causes.filter((c) => c.confidence !== "low"),
+    done_well: a.done_well.filter((d) => d.confidence !== "low"),
+    unclear: [...a.unclear, ...unsure],
+  };
 }
 
-// ── 2. Frame telestration ────────────────────────────────────────────────
+// ── 2. Detection ─────────────────────────────────────────────────────────
+
+const clamp = (n: unknown) => Math.max(0, Math.min(1000, Math.round(Number(n) || 0)));
+
+function cleanBox(b: unknown): Box | null {
+  if (!Array.isArray(b) || b.length !== 4) return null;
+  const [y0, x0, y1, x1] = b.map(clamp);
+  return y1 > y0 && x1 > x0 ? [y0, x0, y1, x1] : null;
+}
+
+const DETECT_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    ball_visible: { type: "BOOLEAN" },
+    ball: { type: "ARRAY", items: { type: "INTEGER" }, description: "[ymin, xmin, ymax, xmax] 0-1000" },
+    people: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          box_2d: { type: "ARRAY", items: { type: "INTEGER" } },
+          team: { type: "STRING", enum: ["us", "them", "keeper", "referee", "unknown"] },
+        },
+        required: ["box_2d", "team"],
+      },
+    },
+  },
+  required: ["ball_visible", "people"],
+};
+
+export async function detectFrame(
+  imageBase64: string,
+  mimeType: string,
+  ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
+): Promise<Detection> {
+  const r = await generateJson<{ ball_visible?: boolean; ball?: unknown; people?: Array<{ box_2d?: unknown; team?: string }> }>(
+    [
+      { inlineData: { mimeType, data: imageBase64 } },
+      {
+        text: [
+          "Football match frame from a wide camera.",
+          "1) Find the ball. It is small and may be far away, partly hidden or blurred — only report it if you can actually see it.",
+          "2) Box every person on the pitch (players, goalkeepers, referees), head to feet, tightly.",
+          `team: "us" = ${ctx.myTeamColour} kit, "them" = ${ctx.opponentColour || "the other outfield kit"}, "keeper" = a goalkeeper, "referee" = officials, "unknown" if you can't tell.`,
+          "Boxes are [ymin, xmin, ymax, xmax] normalized 0-1000.",
+        ].join("\n"),
+      },
+    ],
+    "You are a precise object detector for football video.",
+    DETECT_SCHEMA,
+    DETECT_MODEL,
+  );
+  const teams = ["us", "them", "keeper", "referee", "unknown"] as const;
+  return {
+    ball: r.ball_visible ? cleanBox(r.ball) : null,
+    people: (r.people ?? [])
+      .map((p) => ({ box: cleanBox(p.box_2d), team: teams.find((t) => t === p.team) ?? "unknown" }))
+      .filter((p): p is { box: Box; team: (typeof teams)[number] } => !!p.box)
+      .slice(0, 40),
+  };
+}
+
+// ── 3. Frame telestration (on a numbered frame) ──────────────────────────
 
 const PT = { type: "OBJECT", properties: { y: { type: "INTEGER" }, x: { type: "INTEGER" } }, required: ["y", "x"] };
 
 const ANNOTATION_SCHEMA = {
   type: "OBJECT",
   properties: {
+    check: {
+      type: "OBJECT",
+      properties: {
+        status: { type: "STRING", enum: ["supported", "not_visible", "contradicted"] },
+        note: S("One sentence: what the frame shows about the claim."),
+      },
+      required: ["status", "note"],
+    },
     caption: S("One sentence explaining what the drawing shows."),
     shapes: {
       type: "ARRAY",
@@ -235,257 +327,133 @@ const ANNOTATION_SCHEMA = {
         properties: {
           kind: { type: "STRING", enum: ["player", "ball", "arrow", "line", "gap", "zone"] },
           tone: { type: "STRING", enum: ["error", "good", "info"] },
-          label: S("Max 4 words. For gap: the estimated distance, e.g. '~12m'."),
-          box_2d: { type: "ARRAY", items: { type: "INTEGER" }, description: "[ymin, xmin, ymax, xmax] 0-1000, for player/ball." },
-          points: { type: "ARRAY", items: PT, description: "For arrow (from, to), line (2+), gap (2: the two players' feet), zone (3-6 polygon)." },
+          label: S("Max 3 words, or empty."),
+          id: { type: "INTEGER", description: "player: the number of the person on the frame." },
+          ids: { type: "ARRAY", items: { type: "INTEGER" }, description: "line: numbers of the players, left to right. gap: exactly two numbers." },
+          from_id: { type: "INTEGER", description: "arrow: number of the player the arrow starts at." },
+          from_ball: { type: "BOOLEAN", description: "arrow: true if it starts at the ball (a pass)." },
+          to: PT,
+          points: { type: "ARRAY", items: PT, description: "zone: 3-6 polygon points (0-1000)." },
         },
         required: ["kind", "tone", "label"],
       },
     },
   },
-  required: ["caption", "shapes"],
+  required: ["check", "caption", "shapes"],
 };
 
-const ANNOTATION_SYSTEM = `You are a football video analyst drawing telestration on a single match frame, like a TV pundit on a touchscreen.
+const ANNOTATION_SYSTEM = `You are a football video analyst drawing telestration on a single match frame.
 
-Coordinates are normalized 0-1000 relative to this image. box_2d is [ymin, xmin, ymax, xmax] drawn tightly around one player (head to feet) or the ball. points are {y, x}.
+Every detected person has a white NUMBER drawn above their head. Refer to players ONLY by those numbers — never guess coordinates for a player.
 
-Shapes:
-- player: box_2d around a key player. tone "error" = at fault, "good" = did well, "info" = context (e.g. the attacker, ball carrier).
-- ball: use EXACTLY the ball box given in the brief. If the brief says the ball wasn't found, never draw it or guess where it is.
-- arrow: points [from, to]. Use for a run, a pass, or where a player SHOULD have moved (tone "good" for the correct movement).
-- line: 2+ points along a defensive or midfield line, through the players' feet, left to right.
-- gap: exactly 2 points at two players' feet to show the distance between them; label = estimated distance in metres using the pitch markings for scale (penalty box 16.5m deep, 40.3m wide; centre circle radius 9.15m), e.g. "~14m".
-- zone: 3-6 polygon points around open space that was exploited (tone "error").
+First, CHECK the claim against this frame:
+- "supported": the frame clearly shows it.
+- "not_visible": the moment or player isn't clearly visible here (out of frame, blocked, blurred).
+- "contradicted": the frame shows something different — e.g. the blamed player is clearly too far away to have affected the play, or is not where the claim says.
+Players that look close in a 2D camera view can be far apart in depth; judge depth from the pitch markings. Do not assume anything you cannot see.
 
-Rules — keep it clean, the viewer must still see the play:
-- 2-4 shapes, the fewest that make the ONE point of this moment. No decoration.
-- Labels max 3 words; leave the label empty when the shape is obvious.
-- Points for players are at their FEET (bottom of their box). A pass arrow starts at the ball's given position.
-- Only mark what is actually visible in this frame — if the described moment isn't visible, mark what is relevant and say so in the caption.`;
+Then draw (only if status is "supported"; otherwise return no shapes):
+- player {id}: ring the key player. tone "error" = at fault, "good" = did well, "info" = context (ball carrier, attacker).
+- ball: ring the ball — only if the brief says it was detected.
+- arrow {from_id or from_ball, to}: a run, a pass, or where a player SHOULD have moved (tone "good"). "to" is a pitch point (0-1000 on this image).
+- line {ids}: a defensive or midfield line through those players, left to right.
+- gap {ids: [a, b]}: highlight the space between two players. Never write a distance.
+- zone {points}: open space that was exploited (tone "error").
 
-const KINDS = ["player", "ball", "arrow", "line", "gap", "zone"] as const;
-const clamp = (n: unknown) => Math.max(0, Math.min(1000, Math.round(Number(n) || 0)));
+Keep it clean so the play stays visible: 2-4 shapes, the fewest that make the ONE point. Labels max 3 words, or empty when obvious.`;
 
-// Drop anything malformed so the UI can trust what it draws.
-function cleanBoxes(boxes: unknown): Array<[number, number, number, number]> {
-  if (!Array.isArray(boxes)) return [];
-  return boxes
-    .filter((b): b is number[] => Array.isArray(b) && b.length === 4)
-    .map((b) => b.map(clamp) as [number, number, number, number])
-    .filter(([y0, x0, y1, x1]) => y1 > y0 && x1 > x0)
-    .slice(0, 40);
+const TONES = ["error", "good", "info"] as const;
+const feet = ([, x0, y1, x1]: Box): Pt => ({ x: Math.round((x0 + x1) / 2), y: y1 });
+const centre = ([y0, x0, y1, x1]: Box): Pt => ({ x: Math.round((x0 + x1) / 2), y: Math.round((y0 + y1) / 2) });
+const pt = (p: unknown): Pt | null => {
+  const q = p as Pt | undefined;
+  return q && Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: clamp(q.x), y: clamp(q.y) } : null;
+};
+
+interface RawShape {
+  kind?: string;
+  tone?: string;
+  label?: string;
+  id?: number;
+  ids?: number[];
+  from_id?: number;
+  from_ball?: boolean;
+  to?: unknown;
+  points?: unknown[];
 }
 
-function cleanShapes(shapes: unknown): Shape[] {
-  if (!Array.isArray(shapes)) return [];
+// Turn the model's id-based shapes into coordinates from the detector.
+function resolveShapes(raw: RawShape[], det: Detection): Shape[] {
+  const box = (i: unknown) => (typeof i === "number" ? det.people[i]?.box : undefined);
   const out: Shape[] = [];
-  for (const raw of shapes.slice(0, 5)) {
-    const s = raw as Partial<Shape>;
-    const kind = KINDS.find((k) => k === s?.kind);
-    if (!s || !kind) continue;
-    const tone = (["error", "good", "info"] as const).find((t) => t === s.tone) ?? "info";
-    const label = typeof s.label === "string" ? s.label.slice(0, 28) : "";
-    if (kind === "player" || kind === "ball") {
-      if (!Array.isArray(s.box_2d) || s.box_2d.length !== 4) continue;
-      const [y0, x0, y1, x1] = s.box_2d.map(clamp);
-      if (y1 <= y0 || x1 <= x0) continue;
-      out.push({ kind, tone, label, box_2d: [y0, x0, y1, x1] });
-    } else {
-      const pts = (Array.isArray(s.points) ? s.points : []).map((p) => ({ y: clamp(p?.y), x: clamp(p?.x) }));
-      if (pts.length < (kind === "zone" ? 3 : 2)) continue;
-      out.push({ kind, tone, label, points: kind === "arrow" || kind === "gap" ? pts.slice(0, 2) : pts.slice(0, 8) });
+  for (const s of raw.slice(0, 5)) {
+    const tone: Tone = TONES.find((t) => t === s.tone) ?? "info";
+    const label = typeof s.label === "string" ? s.label.replace(/~?\d+(\.\d+)?\s*m\b/gi, "").trim().slice(0, 28) : "";
+    switch (s.kind) {
+      case "player": {
+        const b = box(s.id);
+        if (b) out.push({ kind: "player", tone, label, box_2d: b });
+        break;
+      }
+      case "ball":
+        if (det.ball) out.push({ kind: "ball", tone, label, box_2d: det.ball });
+        break;
+      case "arrow": {
+        const from = s.from_ball && det.ball ? centre(det.ball) : box(s.from_id) ? feet(box(s.from_id) as Box) : null;
+        const to = pt(s.to);
+        if (from && to) out.push({ kind: "arrow", tone, label, points: [from, to] });
+        break;
+      }
+      case "line":
+      case "gap": {
+        const pts = (s.ids ?? [])
+          .map(box)
+          .filter((b): b is Box => !!b)
+          .map(feet)
+          .sort((a, b) => a.x - b.x);
+        const n = s.kind === "gap" ? 2 : 8;
+        if (pts.length >= 2) out.push({ kind: s.kind, tone, label: s.kind === "gap" ? "" : label, points: pts.slice(0, n) });
+        break;
+      }
+      case "zone": {
+        const pts = (s.points ?? []).map(pt).filter((p): p is Pt => !!p);
+        if (pts.length >= 3) out.push({ kind: "zone", tone, label, points: pts.slice(0, 6) });
+        break;
+      }
     }
   }
   return out;
 }
 
-// ── Detection: where the ball and the people are ─────────────────────────
-// A focused call to a spatial model is far more reliable for a small,
-// distant ball than asking the drawing model to find it while it reasons.
-
-interface Detection {
-  ball: Box | null;
-  people: Box[];
-}
-
-const DETECT_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    ball_visible: { type: "BOOLEAN" },
-    ball: { type: "ARRAY", items: { type: "INTEGER" }, description: "[ymin, xmin, ymax, xmax] 0-1000" },
-    people: { type: "ARRAY", items: { type: "ARRAY", items: { type: "INTEGER" } }, description: "box per player/goalkeeper/referee" },
-  },
-  required: ["ball_visible", "people"],
-};
-
-export async function detectFrame(imageBase64: string, mimeType: string): Promise<Detection> {
-  try {
-    const r = await generateJson<{ ball_visible?: boolean; ball?: unknown; people?: unknown }>(
-      [
-        { inlineData: { mimeType, data: imageBase64 } },
-        {
-          text: "This is a football match frame from a wide camera. Find the ball — it is small and may be far away, partly hidden or motion-blurred; only report it if you can actually see it. Also box every player, goalkeeper and referee on the pitch. Boxes are [ymin, xmin, ymax, xmax] normalized 0-1000.",
-        },
-      ],
-      "You are a precise object detector for football video.",
-      DETECT_SCHEMA,
-      DETECT_MODEL,
-    );
-    const [ball] = r.ball_visible ? cleanBoxes([r.ball]) : [];
-    return { ball: ball ?? null, people: cleanBoxes(r.people) };
-  } catch (e) {
-    console.error("detect failed", e);
-    return { ball: null, people: [] };
-  }
-}
-
-const ballBrief = (d: Detection) =>
-  d.ball
-    ? `The ball is at box_2d [${d.ball.join(", ")}] (detected — use exactly this).`
-    : "The ball could NOT be located in this frame — do not draw the ball or guess its position.";
-
-
 export async function annotateFrame(
-  imageBase64: string,
+  markedBase64: string,
   mimeType: string,
+  det: Detection,
   moment: Pick<Moment, "kind" | "headline" | "who" | "detail" | "fix">,
   ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
 ): Promise<Annotation> {
-  const det = await detectFrame(imageBase64, mimeType);
+  const roster = det.people.map((p, i) => `#${i}: ${p.team}`).join(", ");
   const brief = [
-    ballBrief(det),
     `Analysed team kit colour: ${ctx.myTeamColour}.`,
     ctx.opponentColour ? `Opponent kit colour: ${ctx.opponentColour}.` : "",
-    `Moment (${moment.kind === "good" ? "done well" : moment.kind === "key" ? "key moment" : "mistake"}): ${moment.headline}.`,
+    `Numbered people (detector's team guess): ${roster || "none detected"}.`,
+    det.ball ? "The ball was detected — you may ring it with kind 'ball' or start a pass arrow at it." : "The ball was NOT detected in this frame — do not draw it or start anything at it.",
+    `Claim (${moment.kind === "good" ? "done well" : moment.kind === "key" ? "key moment" : "mistake"}): ${moment.headline}.`,
     moment.who ? `Who: ${moment.who}.` : "",
     `Detail: ${moment.detail}`,
     moment.fix ? `What should have happened: ${moment.fix}` : "",
-    "Draw this on the frame.",
   ].filter(Boolean);
 
-  const res = await generateJson<{ caption?: string; shapes?: unknown }>(
-    [{ inlineData: { mimeType, data: imageBase64 } }, { text: brief.join("\n") }],
+  const res = await generateJson<{ check?: { status?: string; note?: string }; caption?: string; shapes?: RawShape[] }>(
+    [{ inlineData: { mimeType, data: markedBase64 } }, { text: brief.join("\n") }],
     ANNOTATION_SYSTEM,
     ANNOTATION_SCHEMA,
   );
-
-  // Trust the detector for the ball: snap any ball ring to it, or drop it.
-  const shapes = cleanShapes(res.shapes).flatMap((sh): Shape[] => {
-    if (sh.kind !== "ball") return [sh];
-    return det.ball ? [{ ...sh, box_2d: det.ball }] : [];
-  });
+  const status = (["supported", "not_visible", "contradicted"] as const).find((s) => s === res.check?.status) ?? "not_visible";
   return {
+    check: { status, note: typeof res.check?.note === "string" ? res.check.note : "" },
     caption: typeof res.caption === "string" ? res.caption : "",
-    shapes,
-    avoid: det.ball ? [...det.people, det.ball] : det.people,
-  };
-}
-
-// ── 3. 2D tactical board ─────────────────────────────────────────────────
-// A top-down reconstruction of one frame. Approximate: it's inferred from a
-// single angled camera view using the pitch markings.
-
-const BPT = { type: "OBJECT", properties: { x: { type: "NUMBER" }, y: { type: "NUMBER" } }, required: ["x", "y"] };
-const TONE_ENUM = { type: "STRING", enum: ["error", "good", "info", "none"] };
-
-const BOARD_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    players: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: {
-          team: { type: "STRING", enum: ["us", "them"] },
-          x: { type: "NUMBER" },
-          y: { type: "NUMBER" },
-          tone: TONE_ENUM,
-        },
-        required: ["team", "x", "y", "tone"],
-      },
-    },
-    ball: BPT,
-    lines: {
-      type: "ARRAY",
-      description: "Our team's lines (defence, midfield) connecting those players left to right.",
-      items: {
-        type: "OBJECT",
-        properties: { label: S("e.g. 'Back line'"), tone: TONE_ENUM, points: { type: "ARRAY", items: BPT } },
-        required: ["label", "tone", "points"],
-      },
-    },
-    arrows: {
-      type: "ARRAY",
-      items: {
-        type: "OBJECT",
-        properties: { label: S("Max 4 words."), tone: TONE_ENUM, from: BPT, to: BPT },
-        required: ["label", "tone", "from", "to"],
-      },
-    },
-    zones: {
-      type: "ARRAY",
-      description: "Open space that was exploited.",
-      items: {
-        type: "OBJECT",
-        properties: { label: S("Max 4 words."), tone: TONE_ENUM, points: { type: "ARRAY", items: BPT } },
-        required: ["label", "tone", "points"],
-      },
-    },
-  },
-  required: ["players", "lines", "arrows", "zones"],
-};
-
-const BOARD_SYSTEM = `You are a football analyst turning one camera frame into a top-down 2D tactics board.
-
-Pitch coordinates are 0-100 on both axes, from the ANALYSED team's point of view as they attack:
-- y = 0 is the analysed team's OWN goal line, y = 100 the opponent's goal line.
-- x = 0 is the analysed team's left touchline, x = 100 their right touchline.
-Work out which goal the analysed team defends from the context, then use the pitch markings (penalty box, centre circle, halfway line, touchlines) to place every VISIBLE player as accurately as you can. Do not add players who are out of frame.
-
-tone: "error" for players at fault in this moment, "good" for players who did well, "info" for key context (ball carrier, runner), "none" otherwise.
-Lines: the analysed team's defensive line and midfield line, through those players left to right.
-Arrows: key runs/passes, and where a player should have moved (tone "good").
-Zones: open space that was exploited (tone "error").`;
-
-const pct = (n: unknown) => Math.max(0, Math.min(100, Number(n) || 0));
-const bpt = (p: unknown): BoardPt => ({ x: pct((p as BoardPt)?.x), y: pct((p as BoardPt)?.y) });
-const btone = (t: unknown): BoardTone => (["error", "good", "info"] as const).find((x) => x === t) ?? "none";
-
-export async function boardFrame(
-  imageBase64: string,
-  mimeType: string,
-  moment: Pick<Moment, "kind" | "headline" | "who" | "detail" | "fix">,
-  ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
-): Promise<Board> {
-  const det = await detectFrame(imageBase64, mimeType);
-  const brief = [
-    ballBrief(det).replace("do not draw the ball or guess its position", "omit the ball"),
-    `Analysed team ("us") kit: ${ctx.myTeamColour}.`,
-    ctx.opponentColour ? `Opponent ("them") kit: ${ctx.opponentColour}.` : "",
-    `Moment: ${moment.headline}. ${moment.who ? `Who: ${moment.who}. ` : ""}${moment.detail}`,
-    moment.fix ? `What should have happened: ${moment.fix}` : "",
-    "Build the 2D board for this frame.",
-  ].filter(Boolean);
-
-  const r = await generateJson<Record<string, unknown>>(
-    [{ inlineData: { mimeType, data: imageBase64 } }, { text: brief.join("\n") }],
-    BOARD_SYSTEM,
-    BOARD_SCHEMA,
-  );
-  const arr = (v: unknown) => (Array.isArray(v) ? v : []) as Array<Record<string, unknown>>;
-  const label = (v: unknown) => (typeof v === "string" ? v.slice(0, 40) : "");
-  return {
-    players: arr(r.players)
-      .slice(0, 30)
-      .map((p) => ({ team: p.team === "them" ? "them" : "us", ...bpt(p), tone: btone(p.tone) })),
-    ball: r.ball ? bpt(r.ball) : undefined,
-    lines: arr(r.lines)
-      .map((l) => ({ label: label(l.label), tone: btone(l.tone), points: arr(l.points).map(bpt) }))
-      .filter((l) => l.points.length >= 2),
-    arrows: arr(r.arrows).map((a) => ({ label: label(a.label), tone: btone(a.tone), from: bpt(a.from), to: bpt(a.to) })),
-    zones: arr(r.zones)
-      .map((z) => ({ label: label(z.label), tone: btone(z.tone), points: arr(z.points).map(bpt) }))
-      .filter((z) => z.points.length >= 3),
+    shapes: status === "supported" ? resolveShapes(Array.isArray(res.shapes) ? res.shapes : [], det) : [],
+    avoid: det.ball ? [...det.people.map((p) => p.box), det.ball] : det.people.map((p) => p.box),
   };
 }
