@@ -715,6 +715,11 @@ function MomentCard({
             {k.label}
             {m.severity === "major" ? " · major" : ""}
           </span>
+          {d?.measured && (
+            <span className="rounded-full bg-sky-400/10 px-2 py-0.5 text-[11px] font-bold text-sky-300" title="Distances measured from the pitch lines">
+              Measured
+            </span>
+          )}
           {d?.check.status === "not_visible" && (
             <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[11px] font-bold text-amber-300" title={d.check.note}>
               Not clear in this frame

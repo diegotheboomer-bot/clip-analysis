@@ -69,6 +69,7 @@ export type Box = [number, number, number, number]; // [ymin, xmin, ymax, xmax]
 export interface Annotation {
   // Did the frame back up the claim? "contradicted" claims are hidden.
   check: { status: "supported" | "not_visible" | "contradicted"; note: string };
+  measured: boolean; // distances came from pitch calibration
   caption: string;
   shapes: Shape[];
   avoid: Box[]; // every visible player/ball — labels stay clear of these
@@ -77,7 +78,14 @@ export interface Annotation {
 // What the detector found on a frame.
 export interface Detection {
   ball: Box | null;
-  people: Array<{ box: Box; team: "us" | "them" | "keeper" | "referee" | "unknown" }>;
+  people: Array<{
+    box: Box;
+    team: "us" | "them" | "keeper" | "referee" | "unknown";
+    pitch?: [number, number]; // metres on the pitch, when calibrated
+  }>;
+  ballPitch?: [number, number];
+  // Present when the pitch lines were found well enough to measure.
+  calibration?: { points: number; error: number };
 }
 
 // A moment on the timeline, built from the analysis on the client.

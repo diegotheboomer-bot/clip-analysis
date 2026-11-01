@@ -351,13 +351,14 @@ First, CHECK the claim against this frame:
 - "not_visible": the moment or player isn't clearly visible here (out of frame, blocked, blurred).
 - "contradicted": the frame shows something different — e.g. the blamed player is clearly too far away to have affected the play, or is not where the claim says.
 Players that look close in a 2D camera view can be far apart in depth; judge depth from the pitch markings. Do not assume anything you cannot see.
+If MEASURED distances are given in the brief (from pitch-line calibration), trust them over your visual impression. Use them to check whether the blamed player was realistically close enough to have done what the claim says (e.g. press the ball, block the pass, track the runner). If they clearly weren't, the claim is "contradicted".
 
 Then draw (only if status is "supported"; otherwise return no shapes):
 - player {id}: ring the key player. tone "error" = at fault, "good" = did well, "info" = context (ball carrier, attacker).
 - ball: ring the ball — only if the brief says it was detected.
 - arrow {from_id or from_ball, to}: a run, a pass, or where a player SHOULD have moved (tone "good"). "to" is a pitch point (0-1000 on this image).
 - line {ids}: a defensive or midfield line through those players, left to right.
-- gap {ids: [a, b]}: highlight the space between two players. Never write a distance.
+- gap {ids: [a, b]}: highlight the space between two players. Never write a distance yourself — measured distances are added automatically.
 - zone {points}: open space that was exploited (tone "error").
 
 Keep it clean so the play stays visible: 2-4 shapes, the fewest that make the ONE point. Labels max 3 words, or empty when obvious.`;
@@ -412,7 +413,13 @@ function resolveShapes(raw: RawShape[], det: Detection): Shape[] {
           .map(feet)
           .sort((a, b) => a.x - b.x);
         const n = s.kind === "gap" ? 2 : 8;
-        if (pts.length >= 2) out.push({ kind: s.kind, tone, label: s.kind === "gap" ? "" : label, points: pts.slice(0, n) });
+        // A gap gets its MEASURED distance when both players are calibrated.
+        let gapLabel = "";
+        if (s.kind === "gap") {
+          const [a, b] = (s.ids ?? []).map((i) => det.people[i]?.pitch);
+          if (a && b) gapLabel = `${Math.round(Math.hypot(a[0] - b[0], a[1] - b[1]))}m`;
+        }
+        if (pts.length >= 2) out.push({ kind: s.kind, tone, label: s.kind === "gap" ? gapLabel : label, points: pts.slice(0, n) });
         break;
       }
       case "zone": {
@@ -425,6 +432,28 @@ function resolveShapes(raw: RawShape[], det: Detection): Shape[] {
   return out;
 }
 
+// Distances measured from the pitch calibration, as plain facts for the model.
+function measuredFacts(det: Detection): string {
+  if (!det.calibration) return "No pitch calibration for this frame — there are no measured distances; be cautious about depth.";
+  const d = (a: [number, number], b: [number, number]) => Math.round(Math.hypot(a[0] - b[0], a[1] - b[1]));
+  const lines = det.people.flatMap((p, i) => {
+    if (!p.pitch) return [];
+    const parts = [];
+    if (det.ballPitch) parts.push(`${d(p.pitch, det.ballPitch)}m from the ball`);
+    const opp = det.people
+      .map((q, j) => ({ q, j }))
+      .filter(({ q }) => q.pitch && q !== p && ((p.team === "us" && q.team === "them") || (p.team === "them" && q.team === "us")))
+      .map(({ q, j }) => ({ j, m: d(p.pitch as [number, number], q.pitch as [number, number]) }))
+      .sort((a, b) => a.m - b.m)[0];
+    if (opp) parts.push(`nearest opponent #${opp.j} at ${opp.m}m`);
+    return parts.length ? [`#${i} (${p.team}): ${parts.join(", ")}`] : [];
+  });
+  return [
+    `MEASURED from the pitch lines (${det.calibration.points} landmarks, ±${det.calibration.error}m; assumes a standard-size pitch):`,
+    ...lines,
+  ].join("\n");
+}
+
 export async function annotateFrame(
   markedBase64: string,
   mimeType: string,
@@ -433,10 +462,12 @@ export async function annotateFrame(
   ctx: Pick<ClipContext, "myTeamColour" | "opponentColour">,
 ): Promise<Annotation> {
   const roster = det.people.map((p, i) => `#${i}: ${p.team}`).join(", ");
+  const measured = measuredFacts(det);
   const brief = [
     `Analysed team kit colour: ${ctx.myTeamColour}.`,
     ctx.opponentColour ? `Opponent kit colour: ${ctx.opponentColour}.` : "",
     `Numbered people (detector's team guess): ${roster || "none detected"}.`,
+    measured,
     det.ball ? "The ball was detected — you may ring it with kind 'ball' or start a pass arrow at it." : "The ball was NOT detected in this frame — do not draw it or start anything at it.",
     `Claim (${moment.kind === "good" ? "done well" : moment.kind === "key" ? "key moment" : "mistake"}): ${moment.headline}.`,
     moment.who ? `Who: ${moment.who}.` : "",
@@ -451,6 +482,7 @@ export async function annotateFrame(
   );
   const status = (["supported", "not_visible", "contradicted"] as const).find((s) => s === res.check?.status) ?? "not_visible";
   return {
+    measured: !!det.calibration,
     check: { status, note: typeof res.check?.note === "string" ? res.check.note : "" },
     caption: typeof res.caption === "string" ? res.caption : "",
     shapes: status === "supported" ? resolveShapes(Array.isArray(res.shapes) ? res.shapes : [], det) : [],

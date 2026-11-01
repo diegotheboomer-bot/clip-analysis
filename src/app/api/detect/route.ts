@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { detectFrame } from "@/lib/gemini";
+import { detectAll } from "@/lib/detect";
 import { parseFrame, str } from "@/lib/frameRequest";
 
-// One still frame → ball + every person on it (boxes, team guess).
+// One still frame → ball + every person on it (boxes, team) and, when the
+// pitch lines allow, their real positions in metres.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
   const myTeamColour = str(body.myTeamColour, 40);
   if (!frame || !myTeamColour) return NextResponse.json({ error: "Invalid frame" }, { status: 400 });
   try {
-    const detection = await detectFrame(frame.data, frame.mime, { myTeamColour, opponentColour: str(body.opponentColour, 40) || undefined });
+    const detection = await detectAll(frame.data, frame.mime, { myTeamColour, opponentColour: str(body.opponentColour, 40) || undefined });
     return NextResponse.json({ detection });
   } catch (e) {
     console.error("detect error", e);
