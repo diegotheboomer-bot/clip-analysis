@@ -26,5 +26,5 @@ add protection before hosting it publicly.
    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (Project Settings → API)
    - optional `GEMINI_ANALYSIS_MODEL` (default `gemini-4-argon` — paid-only; set `gemini-3.8-flash` for the free tier)
    - optional `GEMINI_DETECT_MODEL` (default `gemini-robotics-er-2-preview`, finds the ball + players on each frame)
-   - optional `ROBOFLOW_API_KEY` — adds Roboflow player detection and pitch-line calibration, so the frame check gets measured distances (positions assume a standard-size pitch; with too few pitch lines visible, nothing is measured)
+   - optional `ROBOFLOW_API_KEY` plus `ROBOFLOW_PLAYERS=on` and/or `ROBOFLOW_CALIBRATION=on` — experimental Roboflow player detection and pitch-line calibration (measured distances). Both off by default: on amateur 3G/Veo footage in testing, the stock broadcast-trained models did worse than Gemini's detector and misplaced pitch lines.
 3. `npm install && npm run dev`, or import the repo into Vercel (preset: Next.js).

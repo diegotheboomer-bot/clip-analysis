@@ -3,13 +3,14 @@
 //  - Roboflow players model: tight boxes for players / keepers / referees
 //  - Gemini Robotics-ER: the ball, and which team each player is on
 //  - Roboflow pitch landmarks → calibration → each player's position in metres
+//    (only with ROBOFLOW_CALIBRATION=on — see roboflow.ts)
 // Falls back to Gemini alone if Roboflow isn't configured or fails.
 // ──────────────────────────────────────────────────────────────────────────
 
 import "server-only";
 import { detectFrame } from "./gemini";
 import { calibrate, onPitch, toPitch } from "./pitch";
-import { rfPeople, rfPitchKeypoints, roboflowEnabled } from "./roboflow";
+import { calibrationEnabled, rfPeople, rfPitchKeypoints, roboflowEnabled } from "./roboflow";
 import type { Box, ClipContext, Detection } from "./types";
 
 const iou = (a: Box, b: Box) => {
@@ -29,7 +30,7 @@ export async function detectAll(
   const [gem, people, keypoints] = await Promise.all([
     detectFrame(imageBase64, mimeType, ctx).catch((e) => (console.error("gemini detect failed", e), null)),
     rf ? rfPeople(imageBase64).catch((e) => (console.error("roboflow players failed", e), null)) : null,
-    rf ? rfPitchKeypoints(imageBase64).catch((e) => (console.error("roboflow pitch failed", e), null)) : null,
+    calibrationEnabled() ? rfPitchKeypoints(imageBase64).catch((e) => (console.error("roboflow pitch failed", e), null)) : null,
   ]);
 
   // People: Roboflow boxes when we have them, team from Gemini's matching box.

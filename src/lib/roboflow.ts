@@ -15,7 +15,16 @@ const PLAYERS_MODEL = process.env.ROBOFLOW_PLAYERS_MODEL ?? "football-players-de
 const PITCH_MODEL = process.env.ROBOFLOW_PITCH_MODEL ?? "football-field-detection-f07vi/14";
 const BASE = "https://serverless.roboflow.com";
 
-export const roboflowEnabled = () => Boolean(KEY);
+// Both Roboflow features are opt-in. Tested on Veo footage from an amateur 3G
+// pitch, the stock (broadcast-trained) models did worse than Gemini's own
+// detector: the players model missed central players and double-counted
+// others, and the pitch model misplaced lines. Turn them on only once they
+// are verified (or fine-tuned) on your footage.
+export const roboflowEnabled = () => Boolean(KEY) && process.env.ROBOFLOW_PLAYERS === "on";
+
+// Calibration feeds Gemini "measured" distances, so a wrong calibration is
+// worse than none — the consistency checks did not catch the bad one in testing.
+export const calibrationEnabled = () => Boolean(KEY) && process.env.ROBOFLOW_CALIBRATION === "on";
 
 interface RfPrediction {
   x: number;
