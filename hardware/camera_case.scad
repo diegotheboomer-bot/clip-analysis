@@ -92,7 +92,7 @@ module body() {
             // camera standoffs (inside each front face)
             for (s = [-1, 1]) on_face(s)
                 for (x = [-1, 1], y = [-1, 1])
-                    translate([x * cam_hole_dx/2, y * cam_hole_dy/2 - cam_lens_dy, -face_in - cam_standoff_h])
+                    translate([x * cam_hole_dx/2, y * cam_hole_dy/2 + cam_lens_dy  /* local +y = down */, -face_in - cam_standoff_h])
                         cylinder(d = 4.6, h = cam_standoff_h + 0.5);
             // Pi standoffs
             for (x = [-1, 1], y = [-1, 1])
@@ -111,7 +111,7 @@ module body() {
         // camera screw pilots
         for (s = [-1, 1]) on_face(s)
             for (x = [-1, 1], y = [-1, 1])
-                translate([x * cam_hole_dx/2, y * cam_hole_dy/2 - cam_lens_dy, -face_in - cam_standoff_h - 1])
+                translate([x * cam_hole_dx/2, y * cam_hole_dy/2 + cam_lens_dy  /* local +y = down */, -face_in - cam_standoff_h - 1])
                     cylinder(d = cam_screw_d, h = cam_standoff_h);
         // Pi screw pilots
         for (x = [-1, 1], y = [-1, 1])
