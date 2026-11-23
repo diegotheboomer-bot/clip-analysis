@@ -33,11 +33,11 @@ er        = 3;       // edge rounding radius
 lid_t       = 3.2;
 lid_crown   = 1;      // flat top (prints face-down, no supports); the case is tilted so rain runs off
 groove_w    = 2.2;    // gasket groove in the body rim
-groove_d    = 1.8;
+groove_d    = 2.2;    // 2 mm silicone cord sits in this
 tongue_w    = 1.2;
-tongue_h    = 1.4;
-insert_d    = 4.0;    // M3 heat-set insert (use 2.6 for self-tapping M3)
-insert_h    = 6;
+tongue_h    = 0.8;    // presses the cord ~30% when the lid is screwed down
+insert_d    = 2.6;    // pilot for M3 self-tapping screws (use 4.0 for heat-set inserts)
+insert_h    = 12;
 
 // ── Cameras (Camera Module 3 Wide) — VERIFY ─────────────────────────────
 cam_hole_dx    = 21;
@@ -154,7 +154,7 @@ module body() {
         lid_screw_xy() translate([0, 0, body_h - insert_h]) cylinder(d = insert_d, h = insert_h + 1);
         // 1/4"-20 nut + bolt
         translate([0, mount_y, -1]) cylinder(d = bolt_d, h = 12);
-        translate([0, mount_y, floor_t]) cylinder(d = nut_af / cos(30), h = nut_h + 0.1, $fn = 6);
+        translate([0, mount_y, floor_t]) cylinder(d = nut_af / cos(30), h = nut_h + 5, $fn = 6);  // open on top: drop the nut in from inside
         // underside vents: 4 narrow slots, covered inside by a baffle
         for (i = [-1.5:1:1.5]) translate([i * 7 - 1, pi_y - 10, -1]) cube([2, 20, floor_t + 2]);
         // waterproof USB-C panel socket in the rear wall
