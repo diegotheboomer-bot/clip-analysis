@@ -4,7 +4,7 @@
 //
 // Weather: tongue-and-groove lid with a gasket (TPU print or 2 mm silicone
 // cord), clear lens discs sealed into outside recesses under rain visors,
-// cable gland for the power lead, vents only on the UNDERSIDE (rain falls
+// sealed USB-C panel socket for power, vents only on the UNDERSIDE (rain falls
 // down, air still rises through the Pi's cooler). "Rain-resistant", not
 // submersible.
 //
@@ -22,7 +22,7 @@ part = "assembly";   // "body", "lid", "gasket", "assembly"
 // ── Overall ─────────────────────────────────────────────────────────────
 cam_angle = 90;
 back_w    = 112;     // width of the rear section
-back_d    = 76;      // depth of the rear section
+back_d    = 106;     // depth of the rear section (room for the USB-C socket behind the Pi)
 body_h    = 46;      // body height (lid sits on top)
 wall      = 3.6;
 floor_t   = 3.2;
@@ -61,7 +61,9 @@ nut_af   = 11.2;   // 1/4"-20 hex nut
 nut_h    = 5.6;
 bolt_d   = 6.8;
 mount_y  = 6;
-gland_d  = 12.6;   // PG7 cable gland
+sock_d   = 22.6;   // waterproof USB-C panel socket (22 mm thread, 28 mm flange/nut)
+sock_x   = 22;     // off-centre so it clears the tether loop
+sock_z   = 22;
 $fn = 40;
 
 half     = cam_angle / 2;
@@ -149,8 +151,8 @@ module body() {
         translate([0, mount_y, floor_t]) cylinder(d = nut_af / cos(30), h = nut_h + 0.1, $fn = 6);
         // underside vents (between the Pi standoffs, under the cooler)
         for (i = [-3:3]) translate([i * 6 - 1.5, pi_y - 14, -1]) cube([3, 28, floor_t + 2]);
-        // cable gland (power + USB) low in the rear wall
-        translate([-28, -back_d + wall + 1, 14]) rotate([90, 0, 0]) cylinder(d = gland_d, h = wall + 4);
+        // waterproof USB-C panel socket in the rear wall
+        translate([sock_x, -back_d + wall + 1, sock_z]) rotate([90, 0, 0]) cylinder(d = sock_d, h = wall + 4);
     }
 }
 
