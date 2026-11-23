@@ -17,7 +17,7 @@
 // !! VERIFY camera hole spacing / lens position with a caliper first.
 // ─────────────────────────────────────────────────────────────────────────
 
-part = "assembly";   // "body", "lid", "gasket", "assembly"
+part = "assembly";   // "body", "lid", "gasket", "assembly", "plate" (body + lid in one file)
 
 // ── Overall ─────────────────────────────────────────────────────────────
 cam_angle = 90;
@@ -31,7 +31,7 @@ er        = 3;       // edge rounding radius
 
 // ── Lid / seal ──────────────────────────────────────────────────────────
 lid_t       = 3.2;
-lid_crown   = 4;      // gentle dome so rain runs off
+lid_crown   = 1;      // flat top (prints face-down, no supports); the case is tilted so rain runs off
 groove_w    = 2.2;    // gasket groove in the body rim
 groove_d    = 1.8;
 tongue_w    = 1.2;
@@ -125,6 +125,12 @@ module body() {
             lid_screw_xy() cylinder(d = 9, h = body_h);
             // nut boss
             translate([0, mount_y, 0]) cylinder(d = nut_af + 7, h = floor_t + nut_h + 1.6);
+            // rain baffle over the vents: a hood open only at its two ends,
+            // so splashes can't fly straight in but air still flows
+            translate([0, pi_y, floor_t]) difference() {
+                translate([-17, -13, 0]) cube([34, 26, 4.5]);
+                translate([-15.5, -15, -0.01]) cube([31, 30, 3]);
+            }
             // tether loop at the rear
             translate([0, -back_d + 1, 8]) rotate([90, 0, 0])
                 difference() { cylinder(d = 14, h = 6); translate([0, 0, -1]) cylinder(d = 7, h = 8); }
@@ -149,8 +155,8 @@ module body() {
         // 1/4"-20 nut + bolt
         translate([0, mount_y, -1]) cylinder(d = bolt_d, h = 12);
         translate([0, mount_y, floor_t]) cylinder(d = nut_af / cos(30), h = nut_h + 0.1, $fn = 6);
-        // underside vents (between the Pi standoffs, under the cooler)
-        for (i = [-3:3]) translate([i * 6 - 1.5, pi_y - 14, -1]) cube([3, 28, floor_t + 2]);
+        // underside vents: 4 narrow slots, covered inside by a baffle
+        for (i = [-1.5:1:1.5]) translate([i * 7 - 1, pi_y - 10, -1]) cube([2, 20, floor_t + 2]);
         // waterproof USB-C panel socket in the rear wall
         translate([sock_x, -back_d + wall + 1, sock_z]) rotate([90, 0, 0]) cylinder(d = sock_d, h = wall + 4);
     }
@@ -159,11 +165,10 @@ module body() {
 module lid() {
     difference() {
         union() {
-            // crowned top: hull of the rim outline and a smaller raised plate
+            // flat top with a chamfered edge
             hull() {
                 linear_extrude(0.01) plan();
-                translate([0, 0, lid_t]) linear_extrude(0.01) plan(er);
-                translate([0, 0, lid_t + lid_crown - 1]) linear_extrude(1) plan(18);
+                translate([0, 0, lid_t + lid_crown - 0.01]) linear_extrude(0.01) plan(er);
             }
             // tongue that presses into the gasket
             translate([0, 0, -tongue_h]) linear_extrude(tongue_h + 0.01) rim_path(tongue_w);
@@ -174,8 +179,6 @@ module lid() {
             translate([0, 0, lid_t + lid_crown - 3.5]) cylinder(d1 = 3.4, d2 = 7, h = 2.2);
             translate([0, 0, lid_t + lid_crown - 1.31]) cylinder(d = 7, h = 10);
         }
-        // subtle grip grooves across the top
-        for (i = [-2:2]) translate([-30, -48 + i * 7, lid_t + lid_crown - 0.8]) cube([60, 2.2, 2]);
     }
 }
 
@@ -187,6 +190,11 @@ module gasket() {
 if (part == "body") body();
 if (part == "lid") lid();
 if (part == "gasket") gasket();
+if (part == "plate") {
+    // one file for quoting/printing: body and lid side by side (gasket: use 2 mm silicone cord)
+    body();
+    translate([back_w + 15, 0, lid_t + lid_crown]) rotate([180, 0, 0]) mirror([0, 1, 0]) lid();
+}
 if (part == "assembly") {
     color("#1b1d22") body();
     color("#24272e") translate([0, 0, body_h + tongue_h + 0.01]) lid();
