@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PitchCam calibration</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui;background:#101815;color:#eff8f1}
+body{max-width:78rem;margin:auto;padding:1rem}canvas{display:block;width:100%;cursor:crosshair}
+label,button{display:inline-block;margin:.35rem}input{width:5rem}
+button,select,input{padding:.4rem}table{text-align:left}th,td{padding:.2rem .5rem}
+</style>
+<h1>Calibrate this view</h1>
+<p>Click four or more known line intersections spread across the playing area. Use a different measured landmark as a check. Enter metres from the same pitch corner, with x along the length and y across the width.</p>
+<label><input style="width:auto" type="checkbox" id="show"> Show detected white-line segments</label>
+<canvas id="frame" aria-label="Click a measured landmark on the first video frame"></canvas>
+<table><thead><tr><th>Point</th><th>x (m)</th><th>y (m)</th><th>Use</th><th></th></tr></thead><tbody id="points"></tbody></table>
+<p>Enter the dimensions used for this game.</p>
+<label>Length (m) <input type="number" id="lengthM" min="1" step="any"></label>
+<label>Width (m) <input type="number" id="widthM" min="1" step="any"></label>
+<label>Goal opening (m) <input type="number" id="goalM" min="1" step="any"></label>
+<label>Our team attacks <select id="attack"><option value="">Select end</option><option value="x0">x = 0</option><option value="xmax">x = pitch length</option></select></label>
+<button id="save">Save pitch.json</button><p id="status" role="status"></p>
+<script>
+const original = new Image(), lines = new Image();
+const frame = document.querySelector("canvas"), ctx = frame.getContext("2d");
+const points = document.querySelector("tbody"), show = document.querySelector("#show");
+function draw() {
+  if (!original.naturalWidth) return;
+  frame.width = original.naturalWidth;
+  frame.height = original.naturalHeight;
+  ctx.drawImage(show.checked && lines.naturalWidth ? lines : original, 0, 0);
+  ctx.font = "bold " + Math.max(16, frame.width/80) + "px system-ui";
+  Array.from(points.rows).forEach((row, index) => {
+    row.cells[0].textContent = index + 1;
+    const {x, y} = row.dataset;
+    ctx.fillStyle = "#00ffae";
+    ctx.beginPath(); ctx.arc(+x,+y,4,0,Math.PI*2); ctx.fill();
+    ctx.strokeText(index+1,+x+6,+y); ctx.fillText(index+1,+x+6,+y);
+  });
+}
+original.onload = lines.onload = show.onchange = draw;
+original.src = "FRAME_DATA";
+lines.src = "LINES_DATA";
+frame.onclick = event => {
+  const rect = frame.getBoundingClientRect(), row = points.insertRow();
+  row.dataset.x = Math.min(frame.width-1, Math.floor((event.clientX-rect.left)*frame.width/rect.width));
+  row.dataset.y = Math.min(frame.height-1, Math.floor((event.clientY-rect.top)*frame.height/rect.height));
+  row.innerHTML = '<td></td><td><input aria-label="Pitch x" type="number" min="0" step="any"></td><td><input aria-label="Pitch y" type="number" min="0" step="any"></td><td><select aria-label="Landmark use"><option>anchors</option><option>checks</option></select></td><td><button>Remove</button></td>';
+  row.querySelector("button").onclick = () => { row.remove(); draw(); };
+  row.querySelector("input").focus(); draw();
+};
+document.querySelector("#save").onclick = () => {
+  const config = {image_size:[frame.width,frame.height], anchors:[], checks:[],
+    pitch_size_m:[lengthM.valueAsNumber,widthM.valueAsNumber],goal_width_m:goalM.valueAsNumber,us_attacks:attack.value};
+  const status = document.querySelector("#status");
+  if (!config.us_attacks || ![...config.pitch_size_m, config.goal_width_m].every(n => n > 0)) {
+    status.textContent = "Enter the dimensions and attacking end."; return;
+  }
+  for (const row of points.rows) {
+    const [x,y] = Array.from(row.querySelectorAll("input"), i => i.valueAsNumber);
+    if (!(x>=0 && x<=lengthM.valueAsNumber && y>=0 && y<=widthM.valueAsNumber)) {
+      status.textContent = "Enter pitch coordinates for every landmark."; return;
+    }
+    config[row.querySelector("select").value].push([+row.dataset.x,+row.dataset.y,x,y]);
+  }
+  if (config.anchors.length < 4 || config.checks.length < 1) {
+    status.textContent = "Choose at least four anchors and one independent check."; return;
+  }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(config,null,2)],{type:"application/json"}));
+  const a = document.createElement("a"); a.href = url; a.download = "pitch.json"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url),1000);
+  status.textContent = "Saved pitch.json. The report will check the landmark errors.";
+};
+</script></html>
