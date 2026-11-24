@@ -52,7 +52,8 @@ function draw() {
   }
   row.players.forEach(p => box(p.box,({us:"#42ffaf",them:"#62c5ff"})[p.team] || "#ddd",
     "#"+p.id+(p.id===row.control_candidate?" · control":"")));
-  if (row.ball_box) box(row.ball_box,"#ffdf42",row.ball_track_id===null?"Ball":"Ball "+row.ball_track_id);
+  if (row.possible_boot) box(row.ball_box,"#ff933d","Possible boot");
+  else if (row.ball_box) box(row.ball_box,"#ffdf42",row.ball_track_id===null?"Ball":"Ball "+row.ball_track_id);
 }
 video.onseeked = draw;
 video.onerror = () => { valid=false; screenBox.hidden=true; message.textContent="The browser could not decode this clip."; };

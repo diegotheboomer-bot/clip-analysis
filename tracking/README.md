@@ -35,6 +35,13 @@ python tracking/track.py sample clip.mp4 frames.jsonl --us red --them blue
 python tracking/track.py report frames.jsonl pitch.json report.json --review review.html
 ```
 
+Add `--check-boots` to the report command to try the footwear check. An orange
+“Possible boot” box marks a detection near a player's feet without a recent
+ball seen approaching from outside a foot region. The raw box remains available
+for review. Its position is withheld from tracks and possession or event
+calculations. Long dribbles and first touches after a gap can also be flagged.
+The check depends on the detector finding the player.
+
 ### Reading a result
 
 - Each sample includes player boxes, kit labels, local track IDs and foot

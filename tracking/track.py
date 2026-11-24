@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 import cv2
 
+from boots import BootCheck
 from events import Events, Tracks
 from pitch import Pitch, line_segments
 
@@ -92,6 +93,7 @@ def report(args):
         size = meta["image_size"]
         pitch = Pitch(json.loads(args.pitch.read_text()), size)
         tracks, events = Tracks(), Events(pitch)
+        boot_check = BootCheck(size) if args.check_boots else None
         frames = []
         for line in stream:
             row = json.loads(line)
@@ -106,10 +108,13 @@ def report(args):
             tracks.update(players, t)
             ball_box = detection["ball"]
             ball = pitch.locate(ball_box, size, ball=True) if ball_box else None
+            possible_boot = bool(boot_check and boot_check.possible_boot(t, ball_box, detection["people"]))
+            if possible_boot:
+                ball = None
             owner = events.observe(t, ball, players)
             frames.append(dict(time=t, players=players, ball_ground_projection=ball,
                                ball_box=ball_box, ball_track_id=events.ball_track if ball is not None else None,
-                               control_candidate=owner))
+                               possible_boot=possible_boot, control_candidate=owner))
         if len(frames) < 2:
             raise ValueError("Need at least two observations to measure elapsed time")
     result = dict(image_size=size, kits=meta.get("kits"), max_landmark_error_m=pitch.error,
@@ -144,6 +149,7 @@ def main():
     analysis.add_argument("pitch", type=Path)
     analysis.add_argument("output", type=Path)
     analysis.add_argument("--review", type=Path, help="also write a local frame-by-frame HTML viewer")
+    analysis.add_argument("--check-boots", action="store_true", help="flag unsupported ball detections at players' feet")
     analysis.set_defaults(run=report)
     args = parser.parse_args()
     try:
