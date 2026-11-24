@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PitchCam tracking review</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui;background:#101815;color:#eff8f1}
+body{max-width:78rem;margin:auto;padding:1rem}button,input{margin:.3rem;padding:.4rem}
+#screen{position:relative}video{display:block;width:100%}canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#sample{width:min(55vw,48rem)}
+</style>
+<h1>Tracking review</h1>
+<p id="summary"></p>
+<label>Open the original clip <input type="file" id="clip" accept="video/*"></label>
+<p id="message" role="status"></p>
+<div id="screen" hidden><video playsinline muted></video><canvas></canvas></div>
+<label>Sample <input type="range" id="sample" min="0" value="0"></label><output id="time"></output>
+<p>Green boxes show our team. Blue boxes show opponents. Grey boxes have another or unknown role. Yellow marks the ball.</p>
+<h2>Events to review</h2><div id="events"></div>
+<script id="data" type="application/json">REPORT_DATA</script>
+<script>
+const report = JSON.parse(document.querySelector("#data").textContent);
+const video = document.querySelector("video"), canvas = document.querySelector("canvas");
+const ctx = canvas.getContext("2d"), sample = document.querySelector("#sample");
+const screenBox = document.querySelector("#screen"), message = document.querySelector("#message");
+const rows = report.frames;
+let localUrl, valid = false;
+sample.max = rows.length-1;
+document.querySelector("#summary").textContent = "Observed control · " +
+  Object.entries(report.observed_control_seconds).map(([side,s]) => side+" "+s.toFixed(2)+" s").join(" · ");
+function select(index) {
+  sample.value = index;
+  const row = rows[+sample.value];
+  document.querySelector("#time").textContent = row.time.toFixed(2)+" s";
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (valid) {
+    video.currentTime = Math.min(video.duration, row.time+.001);
+    if (!video.seeking) draw();
+  }
+}
+function draw() {
+  if (!valid || video.seeking) return;
+  const row = rows[+sample.value];
+  if (Math.abs(video.currentTime-row.time) > .04) return;
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0,0,w,h);
+  ctx.font = "bold "+Math.max(12,h/55)+"px system-ui";
+  ctx.lineWidth = Math.max(2,w/800);
+  function box(coords, colour, label) {
+    const [top,left,bottom,right] = coords.map(n => n/1000);
+    ctx.strokeStyle=colour; ctx.fillStyle=colour;
+    ctx.strokeRect(left*w,top*h,(right-left)*w,(bottom-top)*h);
+    ctx.fillText(label,left*w,Math.max(16,top*h-4));
+  }
+  row.players.forEach(p => box(p.box,({us:"#42ffaf",them:"#62c5ff"})[p.team] || "#ddd",
+    "#"+p.id+(p.id===row.control_candidate?" · control":"")));
+  if (row.ball_box) box(row.ball_box,"#ffdf42",row.ball_track_id===null?"Ball":"Ball "+row.ball_track_id);
+}
+video.onseeked = draw;
+video.onerror = () => { valid=false; screenBox.hidden=true; message.textContent="The browser could not decode this clip."; };
+document.querySelector("#clip").onchange = e => {
+  valid=false; screenBox.hidden=true;
+  if(localUrl) URL.revokeObjectURL(localUrl);
+  if(!e.target.files.length) return;
+  video.src = localUrl = URL.createObjectURL(e.target.files[0]);
+};
+video.onloadeddata = () => {
+  const [width,height] = report.image_size;
+  valid = video.videoWidth===width && video.videoHeight===height && video.duration>=rows[rows.length-1].time;
+  screenBox.hidden=!valid;
+  message.textContent=valid?"":"Choose the original clip with the same dimensions and duration.";
+  if (valid) { canvas.width=width; canvas.height=height; select(+sample.value); }
+};
+sample.oninput = () => select(+sample.value);
+const events = document.querySelector("#events");
+if (!report.events.length) events.textContent="No candidates in the sampled interval.";
+report.events.forEach(event => {
+  const el=document.createElement("p");
+  el.textContent=event.kind.replace("_candidate","")+" · "+event.team+" #"+event.player+
+    (event.receiver?" to #"+event.receiver:"")+" ";
+  for (const [name,t] of [["Release",event.start],["End",event.end]]) {
+    const button=document.createElement("button"); button.textContent=name+" "+t.toFixed(2)+" s";
+    button.onclick=()=>select(rows.findIndex(row=>row.time===t)); el.append(button);
+  }
+  events.append(el);
+});
+select(0);
+</script></html>

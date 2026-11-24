@@ -28,3 +28,9 @@ add protection before hosting it publicly.
    - optional `GEMINI_DETECT_MODEL` (default `gemini-robotics-er-2-preview`, finds the ball + players on each frame)
    - optional `ROBOFLOW_API_KEY` plus `ROBOFLOW_PLAYERS=on` and/or `ROBOFLOW_CALIBRATION=on` — experimental Roboflow player detection and pitch-line calibration (measured distances). Both off by default: on amateur 3G/Veo footage in testing, the stock broadcast-trained models did worse than Gemini's detector and misplaced pitch lines.
 3. `npm install && npm run dev`, or import the repo into Vercel (preset: Next.js).
+
+## Fixed-camera tracking pilot
+
+The [local tracking workflow](tracking/README.md) samples a short clip, fits a
+measured pitch from clicked landmarks and shows player IDs, team and ball
+tracks, observed control time, and pass and shot candidates on their frames.
