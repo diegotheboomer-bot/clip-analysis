@@ -14,3 +14,9 @@ test('viewer fits portrait and landscape screens without crop or letterbox paddi
 test('motion context uses this frame reference and preloads the next three review images',()=>{
  const r=new RemoteReview(),urls=[];r.cache={warm:u=>urls.push(u)};r.frames=Array.from({length:5},(_,i)=>({image:'main-'+i,before:'earlier-'+i}));r.preload(1);assert.deepEqual(urls,['earlier-1','main-2','main-3','main-4']);
 });
+test('stale pan offsets cannot push the fitted image out of its viewport',async()=>{
+ const {imageTransform}=await import('../public/image-cache.mjs');const t=imageTransform(1920,1080,1824,1026,1,[-166,394]);assert.equal(t.x,0);assert.equal(t.y,0);assert.deepEqual(t.pan,[0,0]);
+});
+test('zoomed images stay over every edge even after extreme dragging',async()=>{
+ const {imageTransform}=await import('../public/image-cache.mjs');for(const pan of [[9999,9999],[-9999,-9999],[NaN,Infinity]]){const t=imageTransform(1920,1080,960,540,3,pan);assert.ok(t.x<=0&&t.y<=0);assert.ok(t.x+1920*t.s>=960&&t.y+1080*t.s>=540);}
+});
