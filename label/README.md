@@ -90,7 +90,7 @@ python label/publish.py
 ```
 
 For a first deployment, choose gh-pages and / (root) under repository Settings →
-Pages → Deploy from a branch. The initial deployment is configured for this repo.
+Pages → Deploy from a branch. Enabling Pages requires repository settings access.
 
 ## Verify changes
 
