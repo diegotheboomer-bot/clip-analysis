@@ -821,3 +821,138 @@ dialog .primary {
 #overview {
   -webkit-touch-callout: none;
 }
+
+.absence-tools {
+  margin: 12px 0;
+  display: grid;
+  gap: 8px;
+}
+.absence-single {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.absence-tools button {
+  font-size: 14px;
+  min-height: 46px;
+}
+#run-dialog {
+  width: min(880px, 96vw);
+  max-height: 92dvh;
+  padding: 20px;
+}
+.run-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.run-heading h2 {
+  margin: 0;
+}
+#run-dialog p {
+  font-size: 14px;
+}
+.run-reasons {
+  margin: 18px 0 8px;
+  border: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.run-reasons legend {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.run-reasons button {
+  flex: 1;
+  font-size: 14px;
+}
+.run-reasons [aria-pressed="true"] {
+  color: #101715;
+  background: var(--green);
+  border-color: var(--green);
+}
+.run-guidance {
+  color: var(--muted);
+}
+.run-grid {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.run-frame {
+  padding: 5px;
+  background: var(--panel);
+  border: 2px solid var(--line);
+  text-align: left;
+}
+.run-frame.in-range {
+  border-color: #799f50;
+  background: #253b20;
+}
+.run-frame.range-end {
+  border-color: var(--green);
+}
+.run-frame > span:last-of-type {
+  display: block;
+  font-size: 14px;
+  padding: 6px 3px 2px;
+}
+.run-frame small {
+  display: block;
+  font-size: 12px;
+  padding: 0 3px 4px;
+  color: #c6d2c3;
+}
+.run-picture {
+  position: relative;
+  display: block;
+}
+.run-picture img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+.run-ai-box {
+  position: absolute;
+  border: 2px solid #ffad52;
+  pointer-events: none;
+  min-width: 3px;
+  min-height: 3px;
+}
+.run-footer {
+  position: sticky;
+  bottom: -20px;
+  padding: 12px 0 4px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  background: #18221cf5;
+}
+#run-submit {
+  width: 100%;
+}
+#run-error {
+  color: #ffb0a8;
+}
+@media (max-width: 700px) {
+  #run-dialog {
+    padding: 14px;
+  }
+  .run-heading h2 {
+    font-size: 20px;
+  }
+  .run-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .run-frame > span:last-of-type {
+    font-size: 14px;
+  }
+  .run-footer {
+    bottom: -14px;
+  }
+}
