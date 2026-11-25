@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#101715" />
+    <title>PitchCam · Ball labelling</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <a class="wordmark" href="./" aria-label="PitchCam home"
+        ><span class="brand-dot"></span>PitchCam<span class="wordmark-detail">
+          / labelling</span
+        ></a
+      >
+      <div class="header-actions">
+        <button id="help-button" class="quiet">Help</button
+        ><button id="results-button" class="quiet">
+          Results <span id="total-badge">0</span>
+        </button>
+      </div>
+    </header>
+    <main>
+      <div id="loading" class="loading">Loading the review…</div>
+      <section id="workspace" hidden>
+        <div class="batch-line">
+          <div>
+            <h1>Find the match ball</h1>
+            <p id="progress-label"></p>
+          </div>
+          <span id="save-state" role="status">Saved on this device</span>
+        </div>
+        <div id="progress-track"><div id="progress-fill"></div></div>
+        <div class="work-grid">
+          <section class="viewer" aria-label="Frame to annotate">
+            <div class="viewer-heading">
+              <span id="frame-label"></span
+              ><span id="time-label" class="mono"></span>
+            </div>
+            <button id="choose-area" class="quiet">
+              ← Choose another area
+            </button>
+            <div class="image-stage" id="image-stage">
+              <canvas
+                id="overview"
+                tabindex="0"
+                role="img"
+                aria-label="Match frame. Tap near the ball to open the magnified view."
+              ></canvas>
+              <span id="image-feedback" role="status">Loading frame…</span>
+            </div>
+            <div class="context-bar" aria-label="Nearby frames for context">
+              <span>Check the movement</span>
+              <div>
+                <button id="before-button" class="context-button">
+                  ← Before</button
+                ><button
+                  id="current-button"
+                  class="context-button active"
+                  aria-pressed="true"
+                >
+                  This frame</button
+                ><button id="after-button" class="context-button">
+                  After →
+                </button>
+              </div>
+            </div>
+            <p class="hint" id="overview-hint">
+              Tap near the ball. A magnified view opens below.
+            </p>
+            <div id="focus-panel" hidden>
+              <div class="focus-heading">
+                <strong>Tap the exact centre here</strong>
+                <div>
+                  <button
+                    id="zoom-out"
+                    class="icon-button"
+                    aria-label="Zoom out"
+                  >
+                    −</button
+                  ><button
+                    id="zoom-in"
+                    class="icon-button"
+                    aria-label="Zoom in"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <canvas
+                id="focus"
+                tabindex="0"
+                role="img"
+                aria-label="Magnified view. Tap the centre of the ball."
+              ></canvas>
+              <div id="box-controls">
+                <div class="dimension">
+                  <span>Width</span
+                  ><button
+                    id="width-minus"
+                    class="icon-button"
+                    aria-label="Reduce box width"
+                  >
+                    −</button
+                  ><output id="width-value"></output
+                  ><button
+                    id="width-plus"
+                    class="icon-button"
+                    aria-label="Increase box width"
+                  >
+                    +
+                  </button>
+                </div>
+                <div class="dimension">
+                  <span>Height</span
+                  ><button
+                    id="height-minus"
+                    class="icon-button"
+                    aria-label="Reduce box height"
+                  >
+                    −</button
+                  ><output id="height-value"></output
+                  ><button
+                    id="height-plus"
+                    class="icon-button"
+                    aria-label="Increase box height"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <p class="hint">
+                Fit the outline to the visible ball. Include its blur. Keep
+                boots outside the box.
+              </p>
+            </div>
+          </section>
+          <section class="decisions" aria-label="Ball visibility">
+            <h2>How much can you see?</h2>
+            <div class="status-grid">
+              <button class="status-button" data-status="visible">
+                <span class="status-icon">○</span
+                ><span>Visible<small>Ball is fully visible</small></span>
+              </button>
+              <button class="status-button" data-status="partial">
+                <span class="status-icon">◐</span
+                ><span
+                  >Partly covered<small
+                    >Some of the ball is visible</small
+                  ></span
+                >
+              </button>
+              <button class="status-button" data-status="not_visible">
+                <span class="status-icon">⊘</span
+                ><span>Not visible<small>No ball you can locate</small></span>
+              </button>
+              <button class="status-button" data-status="unsure">
+                <span class="status-icon">?</span
+                ><span>Unsure<small>Too small or ambiguous</small></span>
+              </button>
+            </div>
+            <fieldset id="absence-reasons" hidden>
+              <legend>What happened to the ball?</legend>
+              <button data-reason="outside_frame">Outside the frame</button
+              ><button data-reason="hidden">Hidden behind something</button
+              ><button data-reason="unknown">Can't tell</button>
+            </fieldset>
+            <label class="edge-option" id="edge-option" hidden
+              ><input type="checkbox" id="edge-clipped" /> Cut off by the image
+              edge</label
+            >
+            <p id="decision-help" class="decision-help" aria-live="polite">
+              Follow the ball being played. If you can't identify it, choose
+              Unsure.
+            </p>
+          </section>
+        </div>
+        <footer class="navigation">
+          <button
+            id="previous-button"
+            class="secondary"
+            aria-label="Previous frame"
+          >
+            ← Back
+          </button>
+          <button id="skip-button" class="quiet">Skip</button>
+          <button id="save-next-button" class="primary">
+            Save & next <span>→</span>
+          </button>
+        </footer>
+        <p id="error" role="alert" hidden></p>
+      </section>
+      <section id="results-view" hidden>
+        <div class="section-heading">
+          <div>
+            <h1>Your results</h1>
+            <p id="results-summary"></p>
+          </div>
+          <button id="back-to-work" class="secondary">
+            Continue labelling →
+          </button>
+        </div>
+        <div class="reviewer">
+          <label for="reviewer-name">Your name <span>(optional)</span></label
+          ><input
+            id="reviewer-name"
+            autocomplete="nickname"
+            maxlength="50"
+            placeholder="So we know whose review this is"
+          />
+        </div>
+        <div class="send-card">
+          <div>
+            <h2>Send your work back</h2>
+            <p>
+              Share or download your results, then send the file to the person
+              who sent you this link.
+            </p>
+          </div>
+          <div class="send-actions">
+            <button id="share-results" class="primary">Share results</button
+            ><button id="download-results" class="secondary">
+              Download results
+            </button>
+          </div>
+          <span id="export-message" role="status"></span>
+        </div>
+        <h2 class="review-heading">Check a frame</h2>
+        <div id="frame-list" class="frame-list"></div>
+        <details class="organiser">
+          <summary>Collect reviews & export training labels</summary>
+          <p>
+            Import the JSON files your friends send back. Choose between
+            conflicting answers before exporting.
+          </p>
+          <label class="file-label secondary"
+            >Import results<input
+              id="import-files"
+              type="file"
+              accept=".json,application/json"
+              multiple
+          /></label>
+          <p id="import-feedback" role="status"></p>
+          <div id="collected-summary"></div>
+          <div id="conflicts"></div>
+          <button id="export-coco" class="secondary">
+            Download COCO labels
+          </button>
+          <p class="hint">
+            Includes marked balls and confirmed outside-frame examples. Hidden,
+            unsure, skipped and unresolved frames are excluded.
+          </p>
+        </details>
+      </section>
+    </main>
+    <dialog id="help-dialog">
+      <button
+        class="dialog-close icon-button"
+        id="close-help"
+        aria-label="Close help"
+      >
+        ×
+      </button>
+      <h2>A few taps per frame</h2>
+      <ol>
+        <li>Tap near the match ball in the large picture.</li>
+        <li>
+          Tap its exact centre in the magnified view. Use + and − to fit the
+          outline.
+        </li>
+        <li>Choose Visible or Partly covered, then Save & next.</li>
+      </ol>
+      <p>
+        For a covered ball, outline only the visible part. Mark “Cut off” when
+        the ball reaches the edge of the image.
+      </p>
+      <p>
+        Use Before and After to understand the movement. Your label always
+        belongs to This frame. If you can't see a ball, choose Not visible and a
+        reason. Use Unsure for a blob you can't identify.
+      </p>
+      <p>
+        On a computer, use 1–4 for visibility, Enter to save and arrows to nudge
+        the marked centre. Hold Shift to nudge five pixels.
+      </p>
+      <button id="start-review" class="primary">Got it</button>
+    </dialog>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
