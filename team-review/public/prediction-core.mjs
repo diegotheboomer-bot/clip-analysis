@@ -1,3 +1,4 @@
+import { makePitchLine } from './pitch-lines.mjs';
 export const SCHEMA = 'pitchcam.match-review.v1';
 const finite = n => typeof n === 'number' && Number.isFinite(n);
 const box = a => Array.isArray(a) && a.length === 4 && a.every(finite) && a[2] > a[0] && a[3] > a[1];
@@ -25,7 +26,7 @@ export function normaliseResults(raw) {
   return frames;
 }
 export function initialCorrection(f) {
-  return {ball:{status:f.selected===null?'unsure':'visible',bbox:f.selected===null?null:[...f.candidates[f.selected].bbox],reason:null,reviewed:false},players:structuredClone(f.players),playersReviewed:false,landmarks:structuredClone(f.landmarks),pitchReviewed:false};
+  return {ball:{status:f.selected===null?'unsure':'visible',bbox:f.selected===null?null:[...f.candidates[f.selected].bbox],reason:null,reviewed:false},players:structuredClone(f.players),playersReviewed:false,landmarks:structuredClone(f.landmarks),lines:[],pitchReviewed:false};
 }
 export function reviewQueue(frames, spacing=1, focus='all') {
   let last=-Infinity;
@@ -38,7 +39,7 @@ export function reviewQueue(frames, spacing=1, focus='all') {
 export function trainingAnnotations(frames, corrections, trackTeams={}) {
   const ball={images:[],annotations:[],categories:[{id:1,name:'ball'}]};
   const people={images:[],annotations:[],categories:[{id:1,name:'player'},{id:2,name:'goalkeeper'},{id:3,name:'referee'}]};
-  const pitch=[];let bid=1,pid=1;
+  const pitch=[],pitchLines=[];let bid=1,pid=1;
   const xywh = b => [b[0],b[1],b[2]-b[0],b[3]-b[1]];
   for (const f of frames) {
     const c=corrections[f.id];if(!c)continue;
@@ -51,9 +52,14 @@ export function trainingAnnotations(frames, corrections, trackTeams={}) {
       people.images.push(image);
       for(const p of c.players.filter(p=>box(p.bbox))) {const b=xywh(p.bbox);people.annotations.push({id:pid++,image_id:image.id,category_id:p.role==='referee'?3:p.role==='goalkeeper'?2:1,bbox:b,area:b[2]*b[3],iscrowd:0,track_id:p.track_id,team:p.team_manual?p.team:(trackTeams[String(p.track_id)] || p.team)});}
     }
-    if(c.pitchReviewed) pitch.push({image,landmarks:c.landmarks});
+    if(c.pitchReviewed) {
+      const visibleLandmarks=c.landmarks.filter(p=>p.visibility==='visible');
+      const visibleLines=(c.lines||[]).filter(p=>p.visibility==='visible');
+      if(visibleLandmarks.length)pitch.push({image,landmarks:visibleLandmarks});
+      if(visibleLines.length)pitchLines.push({image,lines:visibleLines});
+    }
   }
-  return {ball,people,pitch};
+  return {ball,people,pitch,pitchLines};
 }
 export function validateCorrection(c,f) {
   if(!c || !['visible','partial','not_visible','unsure'].includes(c.ball?.status))throw Error('Invalid ball correction.');
@@ -65,5 +71,9 @@ export function validateCorrection(c,f) {
   if(c.ball.reviewed && ['visible','partial'].includes(c.ball.status) && !inside(c.ball.bbox))throw Error('Draw a ball box before confirming.');
   if(!Array.isArray(c.players)||c.players.some(p=>!inside(p.bbox)))throw Error('Invalid player box.');
   if(!Array.isArray(c.landmarks)||c.landmarks.some(p=>!Array.isArray(p.xy)||p.xy.length!==2||!p.xy.every(finite)||p.xy[0]<0||p.xy[1]<0||p.xy[0]>f.width||p.xy[1]>f.height||!['visible','hidden','outside_frame'].includes(p.visibility)))throw Error('Invalid pitch landmark.');
+  if(c.lines!==undefined) {
+    if(!Array.isArray(c.lines))throw Error('Invalid pitch lines.');
+    for(const line of c.lines){makePitchLine(line.start,line.end,line);for(const p of [line.start,line.end])if(p[0]<0||p[0]>f.width||p[1]<0||p[1]>f.height)throw Error('Pitch line is outside this frame.');}
+  }
   return c;
 }
