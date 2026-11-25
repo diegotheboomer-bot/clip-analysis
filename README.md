@@ -8,8 +8,10 @@ preserved, including the 640 × 360 GOAL.mp4 export.
 ## Send to friends
 
 Share the GitHub Pages address. Each person can optionally enter their name under
-Results. They tap near the ball, refine the centre in the magnified view, fit the
-outline with the width and height buttons, choose visibility and save.
+Results. They pinch with two fingers to zoom, move both fingers to pan, then drag one
+finger from one corner of the ball to the opposite corner to draw its box.
+Dragging again replaces the box. They choose visibility and save. A tap opens
+the magnified view, which also supports pinch zoom and box drawing.
 
 Before and After display context only. All coordinates belong to This frame.
 A partial ball's box encloses the visible pixels, including blur. Hidden balls
@@ -95,9 +97,10 @@ Pages → Deploy from a branch. Enabling Pages requires repository settings acce
 ## Verify changes
 
 ```sh
-node --test label/core.test.mjs
+node --test label/core.test.mjs label/gestures.test.mjs
 ```
 
 The browser workflow was also checked with Chromium at desktop and mobile
-viewports, covering taps, one-pixel box changes, context frame protection,
+viewports, covering taps, pinch zoom, two-finger pan, drag boxes, gesture
+cancellation, one-pixel box changes, context frame protection,
 draft restoration, JSON downloads, reviewer conflicts and COCO coordinates.

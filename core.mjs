@@ -45,7 +45,7 @@ export function validateAnswer(answer, frame) {
       b[0] + b[2] > frame.width + 0.11 ||
       b[1] + b[3] > frame.height + 0.11
     ) {
-      throw new Error("Tap the ball and fit the outline before saving.");
+      throw new Error("Draw a box around the visible ball before saving.");
     }
     result.bbox = b.map((v) => Math.round(v * 10) / 10);
     result.edgeClipped = answer.edgeClipped === true;
