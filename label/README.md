@@ -86,7 +86,7 @@ GitHub Pages serves the gh-pages branch. From a checkout containing reviewed
 changes, publish the label directory.
 
 ```sh
-git subtree push --prefix=label origin gh-pages
+python label/publish.py
 ```
 
 For a first deployment, choose gh-pages and / (root) under repository Settings →
