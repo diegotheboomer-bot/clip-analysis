@@ -3,7 +3,8 @@ import { importClips, resetModel } from "./importer.js";
 const $ = (id) => document.getElementById(id);
 let busy = false,
   pause = false,
-  invitation = "";
+  invitation = "",
+  retrySettings = null;
 function message(text) {
   $("owner-feedback").textContent = text;
 }
@@ -244,24 +245,17 @@ export async function initOwner() {
     pause = true;
     $("pause-import").disabled = true;
   };
-  $("import-form").onsubmit = async (event) => {
-    event.preventDefault();
+  async function run(settings) {
     if (busy) return;
-    const files = [...$("video-files").files];
-    if (!files.length) return;
     busy = true;
     pause = false;
+    retrySettings = null;
+    $("retry-import").hidden = true;
+    $("import-failures").replaceChildren();
     $("start-import").disabled = true;
     $("pause-import").hidden = false;
     $("pause-import").disabled = false;
     $("import-progress").hidden = false;
-    const settings = {
-      files,
-      project: $("project-name").value.trim(),
-      group: $("match-name").value.trim(),
-      interval: Number($("sample-interval").value),
-      modelName: $("model-name").value.trim(),
-    };
     for (const id of [
       "video-files",
       "project-name",
@@ -270,18 +264,39 @@ export async function initOwner() {
       "model-name",
     ])
       $(id).disabled = true;
+    let lock;
     try {
-      await importClips({
+      try {
+        lock = await navigator.wakeLock?.request("screen");
+      } catch {}
+      const result = await importClips({
         ...settings,
         onStatus: (text) => ($("import-status").textContent = text),
         onProgress: (value) => ($("import-progress").value = value),
         paused: () => pause,
       });
-    } catch (e) {
+      for (const failure of result.failed)
+        $("import-failures").append(
+          el("li", failure.file.name + " — " + failure.message),
+        );
+      const remaining = [
+        ...new Set([...result.failed.map((f) => f.file), ...result.remaining]),
+      ];
+      if (remaining.length) {
+        retrySettings = { ...settings, files: remaining };
+        $("retry-import").hidden = false;
+        $("retry-import").textContent = result.paused
+          ? "Resume remaining clips"
+          : "Retry failed clips";
+      }
+    } catch (error) {
       $("import-status").textContent =
-        e.message +
-        " Completed frames are saved. Choose the same clips to resume.";
+        error.message +
+        " Completed frames are saved. Choose the same clips and settings to resume.";
     } finally {
+      try {
+        await lock?.release();
+      } catch {}
       busy = false;
       $("start-import").disabled = false;
       $("pause-import").hidden = true;
@@ -293,7 +308,27 @@ export async function initOwner() {
         "model-name",
       ])
         $(id).disabled = false;
-      await refresh();
+      await refresh().catch((error) => message(error.message));
     }
+  }
+  $("retry-import").onclick = () => {
+    if (!retrySettings) return;
+    $("project-name").value = retrySettings.project;
+    $("match-name").value = retrySettings.group;
+    $("sample-interval").value = String(retrySettings.interval);
+    $("model-name").value = retrySettings.modelName;
+    run(retrySettings);
+  };
+  $("import-form").onsubmit = (event) => {
+    event.preventDefault();
+    const files = [...$("video-files").files];
+    if (!files.length || busy) return;
+    run({
+      files,
+      project: $("project-name").value.trim(),
+      group: $("match-name").value.trim(),
+      interval: Number($("sample-interval").value),
+      modelName: $("model-name").value.trim(),
+    });
   };
 }

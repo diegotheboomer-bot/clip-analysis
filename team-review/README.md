@@ -64,3 +64,7 @@ This phase annotates the match ball. It does not yet train a model, infer reliab
 For longer gaps, use **Mark several frames**, tap the last thumbnail to include (or **Select all shown**), choose Outside frame, Hidden or Can't tell, then **Mark N frames**. The range is limited to this clip and up to 20 assigned frames. Saved reviews are kept. The group is saved atomically, so a stale or reassigned frame prevents the entire group from being changed. Retry requests reuse operation IDs. Only confirmed outside-frame answers become training negatives.
 
 New imports include private 320-pixel thumbnails for the range grid. Original images remain at source resolution for drawing and training. Older clips fall back to their existing original image.
+
+## Import recovery
+
+The reader waits for metadata and decoded-frame readiness with event and polling checks. A media failure reopens the clip once and resumes its saved frame records. Failed clips are listed by filename while the queue continues. Retry failed clips reuses the selected files and original settings. Completed clips are skipped before decoding or AI loading. Wait time in hidden tabs is excluded from the media timeout; keep the computer awake during imports. The browser requests a screen wake lock when supported.

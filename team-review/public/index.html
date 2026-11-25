@@ -117,9 +117,13 @@
               <button id="start-import" class="primary">
                 Pre-label & import</button
               ><button id="pause-import" class="secondary" type="button" hidden>
-                Pause after this frame
+                Pause import
               </button>
             </div>
+            <button id="retry-import" class="secondary" type="button" hidden>
+              Retry failed clips
+            </button>
+            <ul id="import-failures" aria-label="Clips needing retry"></ul>
             <progress id="import-progress" max="1" value="0" hidden></progress>
             <p id="import-status" role="status"></p>
           </form>

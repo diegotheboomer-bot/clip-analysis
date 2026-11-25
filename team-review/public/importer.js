@@ -1,4 +1,6 @@
 import { api } from "./team-router.js";
+import { VideoReader } from "./video-reader.mjs";
+import { runImportQueue } from "./import-queue.mjs";
 
 let ai,
   requestId = 0,
@@ -56,32 +58,6 @@ function predict(bitmap) {
     ai.postMessage({ type: "detect", id, bitmap }, [bitmap]);
   });
 }
-function once(video, event, action, ms = 15000) {
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      clearTimeout(timer);
-      video.removeEventListener(event, success);
-      video.removeEventListener("error", failure);
-    };
-    const success = () => {
-      cleanup();
-      resolve();
-    };
-    const failure = () => {
-      cleanup();
-      reject(
-        new Error("The browser couldn't decode this video. Try an MP4 export."),
-      );
-    };
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("Video decoding timed out. Retry this clip."));
-    }, ms);
-    video.addEventListener(event, success, { once: true });
-    video.addEventListener("error", failure, { once: true });
-    action?.();
-  });
-}
 async function fingerprint(file, group) {
   const start = await file.slice(0, 1_048_576).arrayBuffer(),
     end = await file.slice(Math.max(0, file.size - 1_048_576)).arrayBuffer();
@@ -95,12 +71,9 @@ async function fingerprint(file, group) {
     .map((v) => v.toString(16).padStart(2, "0"))
     .join("");
 }
-async function capture(video, time, canvas, withThumbnail = false) {
-  const target = Math.max(0, Math.min(video.duration - 0.05, time));
-  if (Math.abs(video.currentTime - target) > 0.001)
-    await once(video, "seeked", () => {
-      video.currentTime = target;
-    });
+async function capture(reader, time, canvas, withThumbnail = false) {
+  const actualTime = await reader.seek(time);
+  const video = reader.video;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(video, 0, 0);
   const blob = await new Promise((resolve) =>
@@ -119,7 +92,7 @@ async function capture(video, time, canvas, withThumbnail = false) {
     );
     if (!thumbnail) throw new Error("Couldn't encode the frame thumbnail.");
   }
-  return { blob, thumbnail, time: video.currentTime };
+  return { blob, thumbnail, time: actualTime };
 }
 export async function importClips({
   files,
@@ -135,119 +108,171 @@ export async function importClips({
     throw new Error(
       "Use Chrome or Edge on your computer to import and run AI.",
     );
-  onStatus("Loading AI model. The first load may take a minute.");
-  const loadedModel = await startModel(modelName, onStatus);
-  let completed = 0;
-  for (const file of files) {
-    if (paused()) return;
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-    const objectUrl = URL.createObjectURL(file);
-    try {
-      await once(video, "loadeddata", () => {
-        video.src = objectUrl;
-        video.load();
-      });
-      if (!Number.isFinite(video.duration) || video.duration <= 0)
-        throw new Error("This video has no readable duration.");
-      const expected = Math.ceil(video.duration / interval);
-      const imported = await api("/api/admin/clips", {
-        method: "POST",
-        body: JSON.stringify({
-          title: file.name,
-          project,
-          matchGroup: group,
-          duration: video.duration,
-          interval,
-          expectedFrames: expected,
-          fingerprint: await fingerprint(
-            file,
-            project + "|" + group + "|" + interval,
-          ),
-        }),
-      });
-      const clip = imported.clip;
-      if (clip.status === "ready") {
-        onStatus(file.name + " already imported.");
-        completed++;
-        continue;
+  // Look up completed work before opening videos or allocating an AI session.
+  const dashboard = await api("/api/admin/dashboard");
+  const known = new Map(
+    dashboard.clips.map((clip) => [clip.fingerprint, clip]),
+  );
+  const fingerprints = new Map();
+  let reader, loadedModel;
+  const model = async () => {
+    if (!loadedModel) {
+      onStatus("Loading AI model. The first load may take a minute.");
+      try {
+        loadedModel = await startModel(modelName, onStatus);
+      } catch (error) {
+        error.fatal = true;
+        throw error;
       }
-      const previous = await api("/api/admin/clips/" + clip.id),
-        existing = new Set(previous.frames.map((f) => f.seq));
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      for (let seq = 0; seq < expected; seq++) {
-        if (paused()) {
-          onStatus("Paused. Choose the same clips and settings to resume.");
+    }
+    return loadedModel;
+  };
+  try {
+    const result = await runImportQueue(files, {
+      paused,
+      onStatus,
+      onProgress,
+      processFile: async (file, index, attempt) => {
+        const prefix = `${index + 1} / ${files.length} · ${file.name}`;
+        if (!fingerprints.has(file))
+          fingerprints.set(
+            file,
+            await fingerprint(file, project + "|" + group + "|" + interval),
+          );
+        const hash = fingerprints.get(file);
+        let clip = known.get(hash);
+        if (clip?.status === "ready") {
+          onStatus(prefix + " · already imported");
           return;
         }
-        if (existing.has(seq)) {
-          onProgress((completed + seq / expected) / files.length);
-          continue;
+        let existing = new Set();
+        if (clip) {
+          const prior = await api("/api/admin/clips/" + clip.id);
+          clip = prior.clip;
+          existing = new Set(prior.frames.map((frame) => frame.seq));
+          if (clip.status === "ready") {
+            known.set(hash, clip);
+            return;
+          }
+          if (existing.size === clip.expected_frames) {
+            await api("/api/admin/clips/" + clip.id + "/publish", {
+              method: "POST",
+            });
+            known.set(hash, { ...clip, status: "ready" });
+            return;
+          }
         }
-        const time = Math.min(video.duration - 0.05, seq * interval);
+        reader ||= new VideoReader({ paused });
         onStatus(
-          file.name +
-            " · frame " +
-            (seq + 1) +
-            " / " +
-            expected +
-            " · finding the ball",
+          prefix + (attempt ? " · reopening video" : " · opening video"),
         );
-        const current = await capture(video, time, canvas, true);
-        const bitmap = await createImageBitmap(canvas);
-        const prediction = await predict(bitmap);
-        const before = await capture(video, time - 0.15, canvas);
-        const after = await capture(video, time + 0.15, canvas);
-        onStatus(
-          file.name +
-            " · frame " +
-            (seq + 1) +
-            " / " +
-            expected +
-            " · saving " +
-            (prediction.proposal ? "AI proposal" : "frame for human search"),
-        );
-        await Promise.all(
-          [
-            ["image", current.blob],
-            ["thumb", current.thumbnail],
-            ["before", before.blob],
-            ["after", after.blob],
-          ].map(([kind, blob]) =>
-            api("/api/admin/assets/" + clip.id + "/" + seq + "/" + kind, {
-              method: "PUT",
-              body: blob,
-              headers: { "Content-Type": "image/jpeg" },
-            }),
-          ),
-        );
-        await api("/api/admin/clips/" + clip.id + "/frames", {
-          method: "POST",
-          body: JSON.stringify({
-            seq,
-            time: current.time,
-            width: canvas.width,
-            height: canvas.height,
-            proposal: prediction.proposal,
-            modelName: loadedModel.modelName,
-            modelHash: loadedModel.modelHash,
-          }),
-        });
-        onProgress((completed + (seq + 1) / expected) / files.length);
-      }
-      await api("/api/admin/clips/" + clip.id + "/publish", { method: "POST" });
-      completed++;
-      onStatus(file.name + " is ready for reviewers.");
-    } finally {
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(objectUrl);
-    }
+        try {
+          const media = await reader.open(file);
+          if (!clip) {
+            const imported = await api("/api/admin/clips", {
+              method: "POST",
+              body: JSON.stringify({
+                title: file.name,
+                project,
+                matchGroup: group,
+                duration: media.duration,
+                interval,
+                expectedFrames: Math.ceil(media.duration / interval),
+                fingerprint: hash,
+              }),
+            });
+            clip = imported.clip;
+            known.set(hash, clip);
+            if (clip.status === "ready") return;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = media.width;
+          canvas.height = media.height;
+          const expected = clip.expected_frames;
+          for (let seq = 0; seq < expected; seq++) {
+            if (paused()) {
+              const error = new Error("Import paused.");
+              error.name = "ImportPaused";
+              throw error;
+            }
+            if (existing.has(seq)) {
+              onProgress((index + (seq + 1) / expected) / files.length);
+              continue;
+            }
+            const aiModel = await model();
+            const time = seq * interval;
+            onStatus(
+              prefix +
+                ` · decoding frame ${seq + 1} / ${expected} at ${time.toFixed(2)} s`,
+            );
+            // Read nearby frames in time order, keeping the AI bitmap tied to
+            // the centre image even while the decoder advances to the context.
+            const before = await capture(reader, time - 0.15, canvas);
+            const current = await capture(reader, time, canvas, true);
+            const bitmap = await createImageBitmap(canvas);
+            let after, prediction;
+            try {
+              after = await capture(reader, time + 0.15, canvas);
+              onStatus(
+                prefix +
+                  ` · finding the ball in frame ${seq + 1} / ${expected}`,
+              );
+              prediction = await predict(bitmap);
+            } finally {
+              bitmap.close();
+            }
+            onStatus(prefix + ` · saving frame ${seq + 1} / ${expected}`);
+            await Promise.all(
+              [
+                ["image", current.blob],
+                ["thumb", current.thumbnail],
+                ["before", before.blob],
+                ["after", after.blob],
+              ].map(([kind, blob]) =>
+                api("/api/admin/assets/" + clip.id + "/" + seq + "/" + kind, {
+                  method: "PUT",
+                  body: blob,
+                  headers: { "Content-Type": "image/jpeg" },
+                }),
+              ),
+            );
+            await api("/api/admin/clips/" + clip.id + "/frames", {
+              method: "POST",
+              body: JSON.stringify({
+                seq,
+                time: current.time,
+                width: canvas.width,
+                height: canvas.height,
+                proposal: prediction.proposal,
+                modelName: aiModel.modelName,
+                modelHash: aiModel.modelHash,
+              }),
+            });
+            existing.add(seq);
+            onProgress((index + (seq + 1) / expected) / files.length);
+          }
+          await api("/api/admin/clips/" + clip.id + "/publish", {
+            method: "POST",
+          });
+          known.set(hash, { ...clip, status: "ready" });
+          onStatus(prefix + " · ready for reviewers");
+        } finally {
+          reader.releaseSource();
+        }
+      },
+    });
+    if (result.paused)
+      onStatus("Paused. Saved frames are kept. Resume when you're ready.");
+    else if (result.failed.length)
+      onStatus(
+        `${result.completed} of ${files.length} clips ready. ${result.failed.length} clip${result.failed.length === 1 ? " needs" : "s need"} retry. Other clips have finished.`,
+      );
+    else
+      onStatus(
+        `${result.completed} clip${result.completed === 1 ? " is" : "s are"} ready for reviewers.`,
+      );
+    return result;
+  } finally {
+    reader?.close();
   }
-  onStatus("Import finished. Reviewers can claim these frames now.");
-  onProgress(1);
 }
