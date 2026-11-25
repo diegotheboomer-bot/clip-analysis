@@ -1,7 +1,7 @@
 import { Zip, ZipPassThrough } from "fflate";
 import { validateAnswer, needsBox, REASONS } from "./labels.mjs";
 import assets from "../generated/assets.mjs";
-import { reviewJobsRoute, reviewMediaAllowed } from './review-jobs.mjs';
+import { reviewJobsRoute, reviewMediaAllowed, ensureReviewSchema } from './review-jobs.mjs';
 
 const now = () => Math.floor(Date.now() / 1000);
 const id = () => crypto.randomUUID();
@@ -598,6 +598,7 @@ export async function api(request, env, ctx) {
     });
   }
   const user = await session(request, env, path.startsWith("/api/admin/"));
+  await ensureReviewSchema(env);
   const jobResponse=await reviewJobsRoute(request,env,ctx,user,{first,rows,stmt,now,id,fail,body,json,newCode,frameView});
   if(jobResponse)return jobResponse;
   if (path === "/api/me")

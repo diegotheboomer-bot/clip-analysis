@@ -1,6 +1,24 @@
 import { Zip, ZipPassThrough, strToU8 } from 'fflate';
 import { validateAnswer } from './labels.mjs';
 import { makePitchLine } from '../public/pitch-lines.mjs';
+const schemaReady=new WeakMap();
+// Existing Sites deployments may not apply newly packaged Drizzle migrations.
+// Additive, idempotent DDL keeps old labels and assignments intact.
+export async function ensureReviewSchema(env){
+  if(!schemaReady.has(env.DB)){
+    const sql=[
+      `CREATE TABLE IF NOT EXISTS review_jobs(id TEXT PRIMARY KEY NOT NULL,request_key TEXT NOT NULL,member_id TEXT NOT NULL REFERENCES members(id),kind TEXT NOT NULL,title TEXT NOT NULL,depends_on TEXT,created_at INTEGER NOT NULL)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS review_job_request ON review_jobs(request_key,kind)`,
+      `CREATE TABLE IF NOT EXISTS review_items(id TEXT PRIMARY KEY NOT NULL,job_id TEXT NOT NULL REFERENCES review_jobs(id),frame_id TEXT NOT NULL REFERENCES frames(id),kind TEXT NOT NULL,position INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'pending',answer TEXT,version INTEGER NOT NULL DEFAULT 0,last_operation TEXT,updated_at INTEGER)`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS review_frame_task ON review_items(frame_id,kind)`,
+      `CREATE INDEX IF NOT EXISTS review_job_items ON review_items(job_id,position)`,
+      `CREATE TABLE IF NOT EXISTS review_changes(operation_id TEXT PRIMARY KEY NOT NULL,item_id TEXT NOT NULL REFERENCES review_items(id),reviewer_id TEXT REFERENCES members(id),answer TEXT NOT NULL,completed INTEGER NOT NULL,created_at INTEGER NOT NULL)`,
+      `CREATE TRIGGER IF NOT EXISTS reserve_unused_ball_frame BEFORE INSERT ON review_items WHEN NEW.kind='ball' AND EXISTS(SELECT 1 FROM frames f WHERE f.id=NEW.frame_id AND (f.state!='pending' OR f.assignee IS NOT NULL)) BEGIN SELECT RAISE(ABORT,'ball frame already claimed'); END`,
+    ];
+    schemaReady.set(env.DB,env.DB.batch(sql.map(q=>env.DB.prepare(q))));
+  }
+  try{await schemaReady.get(env.DB);}catch(error){schemaReady.delete(env.DB);throw error;}
+}
 
 function balanced(frames,count) {
   const groups=new Map();for(const f of frames){if(!groups.has(f.clip_id))groups.set(f.clip_id,[]);groups.get(f.clip_id).push(f);}
