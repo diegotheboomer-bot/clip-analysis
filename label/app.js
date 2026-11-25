@@ -248,7 +248,7 @@ async function showContext(which) {
   }
 }
 
-function go(index, restoreDraft = false) {
+function go(index) {
   if (index < 0 || index >= batch.frames.length) return;
   currentIndex = index;
   const f = frame();
@@ -617,7 +617,7 @@ function bindEvents() {
     persist();
   };
   $("results-button").onclick = showResults;
-  $("back-to-work").onclick = () => go(currentIndex, true);
+  $("back-to-work").onclick = () => go(currentIndex);
   $("download-results").onclick = () => {
     download(makeSubmission(), resultsFilename());
     $("export-message").textContent =
@@ -730,7 +730,7 @@ async function start() {
     $("reviewer-name").value = state.annotator;
     $("loading").hidden = true;
     bindEvents();
-    go(Math.max(0, position), true);
+    go(Math.max(0, position));
     if (!state.helpSeen) $("help-dialog").showModal();
   } catch (err) {
     $("loading").textContent = err.message + " Refresh this page to retry.";
