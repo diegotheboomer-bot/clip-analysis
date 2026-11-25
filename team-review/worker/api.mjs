@@ -648,8 +648,8 @@ export async function api(request, env, ctx) {
     );
     const members = await rows(
       env,
-      `SELECT m.id,m.name,m.active,(SELECT COUNT(*) FROM frames f WHERE assignee=m.id AND state='done') AS done,
-      (SELECT COUNT(*) FROM frames f WHERE assignee=m.id AND state='assigned') AS assigned FROM members m ORDER BY created_at`,
+      `SELECT m.id,m.name,m.active,((SELECT COUNT(*) FROM frames f WHERE assignee=m.id AND state='done')+(SELECT COUNT(*) FROM review_items ri JOIN review_jobs rj ON rj.id=ri.job_id WHERE rj.member_id=m.id AND ri.status='done')) AS done,
+      ((SELECT COUNT(*) FROM frames f WHERE assignee=m.id AND state='assigned')+(SELECT COUNT(*) FROM review_items ri JOIN review_jobs rj ON rj.id=ri.job_id WHERE rj.member_id=m.id AND ri.status!='done')) AS assigned FROM members m ORDER BY created_at`,
     );
     return json({ clips, members });
   }

@@ -104,6 +104,9 @@ $("sign-out").onclick = async () => {
   location.href = "/";
 };
 async function boot() {
+  if(new URL(location.href).searchParams.get('login')==='1'){
+    $('loading').hidden=true;$('team-login').hidden=false;return;
+  }
   const params = new URLSearchParams(location.hash.slice(1));
   if (params.has("owner")) {
     const key = params.get("owner");

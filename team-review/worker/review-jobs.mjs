@@ -66,7 +66,7 @@ export async function reviewJobsRoute(request,env,ctx,user,h) {
     const items=[...balls.map((f,position)=>({id:id(),job:ballJob,frame:f.id,kind:'ball',position})),...pitches.map((f,position)=>({id:id(),job:pitchJob,frame:f.id,kind:'pitch',position}))];
     inserts.push(stmt(env,`INSERT INTO review_items(id,job_id,frame_id,kind,position) SELECT json_extract(value,'$.id'),json_extract(value,'$.job'),json_extract(value,'$.frame'),json_extract(value,'$.kind'),json_extract(value,'$.position') FROM json_each(?)`,JSON.stringify(items)));
     try{await env.DB.batch(inserts);}catch(e){if(code)await stmt(env,'UPDATE members SET active=0 WHERE id=?',member.id).run();fail(409,'Some frames were assigned while creating this batch. Refresh and retry.');}
-    return json({memberId:member.id,code,jobs:jobs.map(j=>({...j,total:count,done:0})),url:'/?batches=1'},201);
+    return json({memberId:member.id,code,jobs:jobs.map(j=>({...j,total:count,done:0})),url:'/?batches=1&login=1'},201);
   }
   if(path==='/api/review-jobs'&&method==='GET')return json({jobs:await summaries(user.role==='owner'?null:user.member_id)});
   if(path==='/api/admin/review-jobs'&&method==='GET')return json({jobs:await summaries()});

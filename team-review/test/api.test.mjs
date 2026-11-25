@@ -684,6 +684,7 @@ test('friend batches reserve separate frames, enforce codes and lock pitch until
  const payload={version:0,operationId:operation,completed:false,answer:pitchAnswer};const draft=await f.call(path,{cookie,method:'PUT',body:payload});assert.equal(draft.response.status,200);assert.equal((await draft.data()).status,'draft');assert.equal((await f.call(path,{cookie,method:'PUT',body:payload})).response.status,200);
  const stale=await f.call(path,{cookie,method:'PUT',body:{...payload,operationId:crypto.randomUUID()}});assert.equal(stale.response.status,409);
  const done=await f.call(path,{cookie,method:'PUT',body:{...payload,version:1,operationId:crypto.randomUUID(),completed:true}});assert.equal(done.response.status,200);
+ const dashboard=await(await f.call('/api/admin/dashboard',{cookie:admin})).data();const member=dashboard.members.find(m=>m.id===data.memberId);assert.equal(member.done,3);assert.equal(member.assigned,1);
  const exported=await f.call('/api/admin/review-modules/export',{cookie:admin});const files=unzipSync(new Uint8Array(await exported.response.arrayBuffer()));const pitchLabels=JSON.parse(strFromU8(files['pitch-lines.json']));assert.equal(pitchLabels.length,1);assert.deepEqual(pitchLabels[0].lines.map(l=>l.id),['line-a']);const history=JSON.parse(strFromU8(files['review-history.json']));assert.equal(history.find(h=>h.task==='pitch').answer.lines.length,2);
  assert.equal((await f.call('/api/admin/review-modules/export',{cookie})).response.status,403);
 });
