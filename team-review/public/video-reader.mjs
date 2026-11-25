@@ -32,6 +32,7 @@ export class VideoReader {
     paused = () => false,
     timeoutMs = 45000,
     pollMs = 100,
+    endPaddingSec = 0.12,
     now = () => Date.now(),
     createURL = (file) => URL.createObjectURL(file),
     revokeURL = (url) => URL.revokeObjectURL(url),
@@ -41,6 +42,7 @@ export class VideoReader {
     this.paused = paused;
     this.timeoutMs = timeoutMs;
     this.pollMs = pollMs;
+    this.endPaddingSec = endPaddingSec;
     this.now = now;
     this.createURL = createURL;
     this.revokeURL = revokeURL;
@@ -152,7 +154,7 @@ export class VideoReader {
 
   async seek(time) {
     const video = this.video;
-    const endPadding = Math.min(0.12, video.duration / 2);
+    const endPadding = Math.min(this.endPaddingSec, video.duration / 2);
     const target = Math.max(0, Math.min(video.duration - endPadding, time));
     await this.wait(
       () =>
