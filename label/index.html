@@ -8,7 +8,7 @@
     />
     <meta name="theme-color" content="#101715" />
     <title>PitchCam · Ball labelling</title>
-    <link rel="stylesheet" href="styles.css?v=2" />
+    <link rel="stylesheet" href="styles.css?v=3" />
   </head>
   <body>
     <header class="header">
@@ -41,14 +41,11 @@
               <span id="frame-label"></span
               ><span id="time-label" class="mono"></span>
             </div>
-            <button id="choose-area" class="quiet">
-              ← Choose another area
-            </button>
             <div class="view-tools">
-              <span id="zoom-level" class="mono">1.0×</span
-              ><button id="reset-view" class="quiet">Reset view</button
-              ><button id="refine-box" class="quiet" hidden>
-                Magnify selection
+              <span id="zoom-level" class="mono">1.0×</span>
+              <button id="reset-view" class="quiet">Reset view</button>
+              <button id="remove-box" class="secondary" disabled>
+                Remove box
               </button>
             </div>
             <div class="image-stage" id="image-stage">
@@ -77,75 +74,9 @@
               </div>
             </div>
             <p class="hint" id="overview-hint">
-              Pinch to zoom and move with two fingers. Drag a box around the
-              ball with one finger.
+              Pinch with two fingers to zoom. Drag one finger from one corner of
+              the ball to the opposite corner. Lift to finish.
             </p>
-            <div id="focus-panel" hidden>
-              <div class="focus-heading">
-                <strong>Drag a box around the ball</strong>
-                <div>
-                  <button
-                    id="zoom-out"
-                    class="icon-button"
-                    aria-label="Zoom out"
-                  >
-                    −</button
-                  ><button
-                    id="zoom-in"
-                    class="icon-button"
-                    aria-label="Zoom in"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-              <canvas
-                id="focus"
-                tabindex="0"
-                role="img"
-                aria-label="Magnified view. Pinch to zoom and pan. Drag a box around the ball."
-              ></canvas>
-              <div id="box-controls">
-                <div class="dimension">
-                  <span>Width</span
-                  ><button
-                    id="width-minus"
-                    class="icon-button"
-                    aria-label="Reduce box width"
-                  >
-                    −</button
-                  ><output id="width-value"></output
-                  ><button
-                    id="width-plus"
-                    class="icon-button"
-                    aria-label="Increase box width"
-                  >
-                    +
-                  </button>
-                </div>
-                <div class="dimension">
-                  <span>Height</span
-                  ><button
-                    id="height-minus"
-                    class="icon-button"
-                    aria-label="Reduce box height"
-                  >
-                    −</button
-                  ><output id="height-value"></output
-                  ><button
-                    id="height-plus"
-                    class="icon-button"
-                    aria-label="Increase box height"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-              <p class="hint">
-                Fit the outline to the visible ball. Include its blur. Keep
-                boots outside the box.
-              </p>
-            </div>
           </section>
           <section class="decisions" aria-label="Ball visibility">
             <h2>How much can you see?</h2>
@@ -301,6 +232,6 @@
       </p>
       <button id="start-review" class="primary">Got it</button>
     </dialog>
-    <script type="module" src="app.js?v=2"></script>
+    <script type="module" src="app.js?v=3"></script>
   </body>
 </html>

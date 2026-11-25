@@ -242,65 +242,12 @@ canvas {
   font-size: 12px;
   margin-top: 10px;
 }
-.focus-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin: 15px 0 7px;
-  gap: 8px;
-}
-.focus-heading strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-.focus-heading > div {
-  display: flex;
-  gap: 6px;
-}
 .icon-button {
   min-width: 46px;
   min-height: 46px;
   font-size: 22px;
   line-height: 1;
   padding: 8px;
-}
-.focus-heading .icon-button {
-  min-height: 44px;
-}
-.focus-heading .icon-button:disabled {
-  opacity: 0.25;
-}
-#focus {
-  height: 200px;
-  background: #0a0e0b;
-  border: 1px solid #4c634c;
-  border-radius: 10px;
-  image-rendering: pixelated;
-}
-#box-controls {
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  margin-top: 10px;
-}
-.dimension {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.dimension > span {
-  color: var(--muted);
-  margin-right: 2px;
-}
-.dimension output {
-  min-width: 35px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-.dimension .icon-button {
-  min-width: 44px;
-  min-height: 44px;
 }
 .decisions h2 {
   margin: 0 0 14px;
@@ -607,9 +554,6 @@ dialog .primary {
   margin-top: 10px;
 }
 @media (min-width: 1000px) {
-  #focus {
-    height: 220px;
-  }
   .navigation {
     max-width: calc(100% - 352px);
   }
@@ -624,9 +568,6 @@ dialog .primary {
   }
   .context-bar > span {
     display: none;
-  }
-  .dimension {
-    gap: 4px;
   }
 }
 @media (max-width: 700px) {
@@ -685,9 +626,6 @@ dialog .primary {
   }
   .viewer-heading {
     font-size: 12px;
-  }
-  #focus {
-    height: 200px;
   }
   .focus-heading {
     margin-top: 12px;
@@ -759,16 +697,9 @@ dialog .primary {
   .primary span {
     margin-left: 12px;
   }
-  .dimension {
-    gap: 4px;
-  }
   .dimension > span {
     font-size: 11px;
     margin: 0;
-  }
-  .dimension output {
-    font-size: 11px;
-    min-width: 29px;
   }
   #box-controls {
     gap: 8px;
@@ -808,9 +739,6 @@ dialog .primary {
   dialog {
     padding: 22px;
   }
-  .dimension .icon-button {
-    padding: 6px;
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   * {
@@ -833,18 +761,11 @@ dialog .primary {
   }
 }
 
-#choose-area {
-  display: none;
-}
 #results-view .reviewer {
   max-width: 460px;
   margin-bottom: 20px;
 }
 @media (max-width: 700px) {
-  .has-focus .image-stage,
-  .has-focus #overview-hint {
-    display: none;
-  }
   .has-focus #choose-area {
     display: inline-flex;
     align-items: center;
@@ -852,47 +773,26 @@ dialog .primary {
     margin-top: -10px;
     min-height: 44px;
   }
-  .has-focus .viewer-heading {
-    margin-bottom: 0;
-  }
   .has-focus .context-bar {
     padding-top: 0;
-  }
-  .has-focus #focus {
-    height: 180px;
   }
   .has-focus .focus-heading {
     margin-top: 8px;
   }
-  .has-focus #focus-panel > .hint {
-    display: none;
-  }
   .has-focus .work-grid {
     gap: 16px;
-  }
-  .has-focus .batch-line h1 {
-    display: none;
   }
   .has-focus .batch-line {
     margin-bottom: 10px;
   }
-  .has-focus .batch-line p {
-    margin-top: 0;
-  }
   .has-focus #progress-track {
     margin-bottom: 12px;
-  }
-  .has-focus .status-button {
-    min-height: 60px;
   }
   .has-focus .decision-help {
     font-size: 12px;
   }
 }
 @media (max-width: 700px) {
-  .has-focus #focus {
-    height: 160px;
-  }
   .has-focus .decision-help {
     display: none;
   }
@@ -914,8 +814,10 @@ dialog .primary {
   font-size: 12px;
   padding: 8px 10px;
 }
-@media (max-width: 700px) {
-  .has-focus .view-tools {
-    display: none;
-  }
+
+#remove-box {
+  margin-left: auto;
+}
+#overview {
+  -webkit-touch-callout: none;
 }
