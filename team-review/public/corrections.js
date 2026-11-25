@@ -1,7 +1,9 @@
 import { zipSync, strToU8 } from 'fflate';
 import { normaliseResults, initialCorrection, reviewQueue, trainingAnnotations, validateCorrection, SCHEMA } from './prediction-core.mjs';
 import { VideoReader } from './video-reader.mjs';
-import { makePitchLine, lineHit, movePitchLine } from './pitch-lines.mjs';
+import { makePitchLine, lineHit, movePitchLine, editableLines } from './pitch-lines.mjs';
+import { RemoteReview } from './review-remote.mjs';
+let remoteReview=null;
 const $=id=>document.getElementById(id), canvas=$('canvas'), ctx=canvas.getContext('2d'), still=document.createElement('canvas'), picture=still.getContext('2d');
 let frames=[], corrections={}, trackTeams={}, fingerprint='', jsonName='', videoName='', queue=[], index=0, layer='pitch', selected=null, mode='line', busy=false, ready=false, zoom=1, pan=[0,0], space=false, undo=[], db, reader=new VideoReader({endPaddingSec:0.001}), gesture=null;
 const pointers=new Map();
@@ -10,11 +12,11 @@ const frame=()=>frames.find(f=>f.id===queue[index]);
 const correction=()=>{const f=frame();const c=corrections[f.id] ||= initialCorrection(f);c.lines ||= [];return c;};
 const stored=()=>({schema:SCHEMA,fingerprint,jsonName,videoName,match:$('match').value,trackTeams,corrections,exportedAt:new Date().toISOString()});
 async function database(){if(db)return db;db=await new Promise((resolve,reject)=>{const r=indexedDB.open('pitchcam-prediction-corrections',1);r.onupgradeneeded=()=>r.result.createObjectStore('sessions');r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});return db;}
-async function save(){try{const d=await database();await new Promise((resolve,reject)=>{const tx=d.transaction('sessions','readwrite');tx.objectStore('sessions').put(stored(),fingerprint);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});$('saved').textContent='Saved on this device';}catch{$('saved').textContent='Local save unavailable — download corrections now';}}
+async function save(){if(remoteReview){if(remoteReview.readOnly(frame().id))return;$('saved').textContent='Saving draft to site…';remoteReview.schedule(frame().id,correction());return;}try{const d=await database();await new Promise((resolve,reject)=>{const tx=d.transaction('sessions','readwrite');tx.objectStore('sessions').put(stored(),fingerprint);tx.oncomplete=resolve;tx.onerror=()=>reject(tx.error);});$('saved').textContent='Saved on this device';}catch{$('saved').textContent='Local save unavailable — download corrections now';}}
 async function restoreLocal(){try{const d=await database();return await new Promise((resolve,reject)=>{const r=d.transaction('sessions').objectStore('sessions').get(fingerprint);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}catch{return null;}}
 function snapshot(){undo.push({id:frame().id,value:structuredClone(correction()),teams:{...trackTeams}});if(undo.length>30)undo.shift();}
 function dirty(){const c=correction();if(layer==='ball')c.ball.reviewed=false;else c[layer==='players'?'playersReviewed':'pitchReviewed']=false;save();controls();paint();}
-function change(fn){if(!ready)return;snapshot();fn(correction());dirty();}
+function change(fn){if(!ready)return;if(remoteReview?.readOnly(frame().id))return message('This frame is completed and saved.');snapshot();fn(correction());dirty();}
 function download(data,name,type='application/json'){const url=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 function layout(){const f=frame();if(!f)return;const r=canvas.getBoundingClientRect();const cw=Math.max(1,Math.round(r.width*devicePixelRatio)),ch=Math.max(1,Math.round(r.height*devicePixelRatio));if(canvas.width!==cw)canvas.width=cw;if(canvas.height!==ch)canvas.height=ch;const fit=Math.min(r.width/f.width,r.height/f.height);return {r,s:fit*zoom,x:(r.width-f.width*fit*zoom)/2+pan[0],y:(r.height-f.height*fit*zoom)/2+pan[1]};}
 function point(e){const t=layout();return [(e.clientX-t.r.left-t.x)/t.s,(e.clientY-t.r.top-t.y)/t.s];}
@@ -39,7 +41,7 @@ function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=corre
 }
 
 function options(node,items,value){node.replaceChildren(...[['','Select…'],...items].map(([v,label])=>{const o=document.createElement('option');o.value=v;o.textContent=label;return o;}));node.value=value!==null&&value!==undefined?String(value):'';}
-function controls(){if(!queue.length)return;const f=frame(),c=correction();$('position').textContent=`${index+1} / ${queue.length} · ${f.time.toFixed(3)} s · source frame ${f.originalFrameId ?? f.id}`;$('timeline').max=queue.length-1;$('timeline').value=index;
+function controls(){if(!queue.length)return;const f=frame(),c=correction();$('position').textContent=remoteReview?`${remoteReview.job.kind==='ball'?'Ball':'Pitch lines'} · ${index+1} / ${queue.length} · ${f.source}`:`${index+1} / ${queue.length} · ${f.time.toFixed(3)} s · source frame ${f.originalFrameId ?? f.id}`;$('timeline').max=queue.length-1;$('timeline').value=index;
  for(const id of ['ball','player','pitch'])$(id+'-tools').hidden=(id==='player'?'players':id)!==layer;
  document.querySelectorAll('[data-layer]').forEach(b=>b.classList.toggle('active',b.dataset.layer===layer));
  $('layer-help').textContent=layer==='ball'?'Tap a candidate or draw a tight box around the visible ball.':layer==='players'?'Select a player. Correct the box, team or role. Check all people before confirming.':'Drag to draw a straight line. Move the line or either endpoint.';
@@ -49,16 +51,16 @@ function controls(){if(!queue.length)return;const f=frame(),c=correction();$('po
  const p=c.players.find(p=>p.id===selected);$('team').value=p?(p.team_manual?p.team:(trackTeams[String(p.track_id)]||p.team)):'unknown';$('role').value=p?.role||'unknown';$('apply-track').disabled=!p||p.track_id===null;
  options($('landmark-list'),c.landmarks.map((p,i)=>[i,`${p.label} · ${p.visibility}`]),typeof selected==='number'?selected:null);
  const landmark=typeof selected==='number'?c.landmarks[selected]:null;if(landmark){$('landmark-label').value=landmark.label;$('landmark-visibility').value=landmark.visibility;}
- const reviewed=layer==='ball'?c.ball.reviewed:c[layer==='players'?'playersReviewed':'pitchReviewed'];$('review-state').textContent=reviewed?'Reviewed on this frame':'Needs review';$('confirm').textContent='Correct & next';$('confirm').disabled=!ready;$('absence-end').min=f.time;$('absence-end').placeholder=(f.time+1).toFixed(1);
+ const reviewed=layer==='ball'?c.ball.reviewed:c[layer==='players'?'playersReviewed':'pitchReviewed'];$('review-state').textContent=reviewed?'Reviewed on this frame':'Needs review';$('confirm').textContent='Correct & next';$('confirm').disabled=!ready||Boolean(remoteReview?.readOnly(f.id));$('absence-end').min=f.time;$('absence-end').placeholder=(f.time+1).toFixed(1);
  $('draw-mode').textContent=layer==='pitch'?'Draw line':mode==='draw'?'Drawing…':'Draw box';$('draw-mode').disabled=false;
  $('draw-mode').classList.toggle('active',mode==='draw'||mode==='line');$('select-mode').classList.toggle('active',mode==='select');$('stage').classList.toggle('drawing',mode==='draw'||mode==='line'||mode==='point');
  const activeLine=selectedPitchLine();
- options($('pitch-line-list'),c.lines.map((l,i)=>[l.id,`${i+1}. ${l.kind.replaceAll('_',' ')} · ${l.visibility==='visible'?'visible':'assumed'}`]),activeLine?.id);
- if(activeLine){$('pitch-line-kind').value=activeLine.kind;$('pitch-line-visibility').value=activeLine.visibility;}
+ options($('pitch-line-list'),c.lines.map((l,i)=>[l.id,`Line ${i+1} · ${l.visibility==='visible'?'visible':'assumed'}`]),activeLine?.id);
+ if(activeLine){$('pitch-line-kind').value='unknown';$('pitch-line-visibility').value=activeLine.visibility;}
  $('line-evidence').textContent=$('pitch-line-visibility').value==='inferred'?'Assumed lines are dashed and saved outside training labels.':'Draw a separate Assumed line for any hidden continuation.';
 
 }
-async function go(n){if(busy||!queue.length)return;busy=true;ready=false;$('confirm').disabled=true;const next=Math.max(0,Math.min(queue.length-1,n)),f=frames.find(f=>f.id===queue[next]);message('Decoding frame…');try{await reader.seek(f.time);still.width=f.width;still.height=f.height;picture.drawImage(reader.video,0,0,f.width,f.height);index=next;selected=null;gesture=null;ready=true;message('');controls();paint();}catch(e){message(e.message+' Select another frame to retry.');}finally{busy=false;}}
+async function go(n){if(busy||!queue.length)return;busy=true;ready=false;$('confirm').disabled=true;const next=Math.max(0,Math.min(queue.length-1,n)),f=frames.find(f=>f.id===queue[next]);message(remoteReview?'Loading assigned frame…':'Decoding frame…');try{if(remoteReview)await remoteReview.flush();const image=remoteReview?await remoteReview.image(f):(await reader.seek(f.time),reader.video);still.width=f.width;still.height=f.height;picture.drawImage(image,0,0,f.width,f.height);if(remoteReview)undo=[];index=next;selected=null;gesture=null;ready=true;message('');controls();paint();}catch(e){message(e.message+' Select another frame to retry.');}finally{busy=false;}}
 function rebuild(){const id=queue[index],nextQueue=reviewQueue(frames,Number($('spacing').value),$('focus').value);if(!nextQueue.length){$('focus').value='all';message('No uncertain frames found. Keeping the current queue.');return;}queue=nextQueue;go(Math.max(0,queue.indexOf(id)));}
 async function open(){if(busy)return;const j=$('json').files[0],v=$('video-file').files[0];if(!j||!v)return message('Choose both the results JSON and its original video.');busy=true;ready=false;$('work').hidden=true;message('Opening files locally…');try{if(j.size>120*1024*1024)throw Error('Use a JSON export smaller than 120 MB.');const text=await j.text();let raw;try{raw=JSON.parse(text);}catch{raw=text.trim().split(/\r?\n/).map(l=>JSON.parse(l));}const parsed=normaliseResults(raw),meta=await reader.open(v);if(parsed.at(-1).time>meta.duration+.15)throw Error('This video is shorter than the exported timeline. Choose the matching original clip.');if(parsed.some(f=>Math.abs(f.width/f.height-meta.width/meta.height)>.03))throw Error('The video shape does not match the JSON. Choose the same original video export.');frames=parsed;jsonName=j.name;videoName=v.name;const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));fingerprint=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('');const local=await restoreLocal();corrections=local?.corrections||{};trackTeams=local?.trackTeams||{};$('match').value=local?.match||'';undo=[];queue=reviewQueue(frames,1);index=0;zoom=1;pan=[0,0];$('spacing').value='1';$('focus').value='all';$('source-info').textContent=`${frames.length} exported frames · ${parsed.at(-1).time.toFixed(2)} seconds · ${v.name}. ${local?'Previous corrections restored.':''}`;$('work').hidden=false;$('setup').hidden=true;$('change-files').hidden=false;busy=false;await go(0);}catch(e){message(e.message);busy=false;}}
 function nextOpen(){const key=layer==='ball'?'ball':layer==='players'?'playersReviewed':'pitchReviewed';for(let n=1;n<=queue.length;n++){const i=(index+n)%queue.length,c=corrections[queue[i]],done=key==='ball'?c?.ball.reviewed:c?.[key];if(!done)return go(i);}message('Every frame in this queue is reviewed for this layer.');}
@@ -74,8 +76,8 @@ $('player-list').onchange=()=>{selected=$('player-list').value;controls();paint(
 $('apply-track').onclick=()=>change(c=>{const p=c.players.find(p=>p.id===selected);if(p&&p.track_id!==null){trackTeams[String(p.track_id)]=$('team').value;p.team_manual=false;}});
 $('landmark-list').onchange=()=>{selected=$('landmark-list').value===''?null:Number($('landmark-list').value);controls();paint();};$('add-landmark').onclick=()=>{if(!$('new-landmark-label').value.trim())return message('Enter the landmark label, then tap its visible location.');mode='point';message('Tap the visible landmark in the image.');};$('landmark-visibility').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].visibility=$('landmark-visibility').value;});$('landmark-label').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].label=$('landmark-label').value.trim()||c.landmarks[selected].label;});
 $('remove').onclick=()=>change(c=>{if(layer==='ball'){c.ball.bbox=null;c.ball.status='unsure';}else if(layer==='players')c.players=c.players.filter(p=>p.id!==selected);else if(selectedPitchLine())c.lines=c.lines.filter(l=>l.id!==selectedPitchLine().id);else if(typeof selected==='number')c.landmarks.splice(selected,1);selected=null;});
-$('undo').onclick=()=>{if(!ready||!undo.length)return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
-$('confirm').onclick=()=>{if(!ready)return;try{const c=correction();snapshot();if(layer==='ball')c.ball.reviewed=true;else c[layer==='players'?'playersReviewed':'pitchReviewed']=true;validateCorrection(c,frame());save();controls();if(index<queue.length-1)go(index+1);else message('Reached the last frame in this queue. Download your corrections.');}catch(e){const u=undo.pop();if(u)corrections[u.id]=u.value;message(e.message);}};
+$('undo').onclick=()=>{if(!ready||!undo.length||remoteReview?.readOnly(frame().id))return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
+$('confirm').onclick=async()=>{if(!ready)return;if(remoteReview)return confirmRemote();try{const c=correction();snapshot();if(layer==='ball')c.ball.reviewed=true;else c[layer==='players'?'playersReviewed':'pitchReviewed']=true;validateCorrection(c,frame());save();controls();if(index<queue.length-1)go(index+1);else message('Reached the last frame in this queue. Download your corrections.');}catch(e){const u=undo.pop();if(u)corrections[u.id]=u.value;message(e.message);}};
 $('bulk-absence').onclick=()=>{if(!ready)return;const start=frame().time,end=Number($('absence-end').value),reason=$('ball-reason').value;if(!$('absence-end').value||!Number.isFinite(end)||end<start||end>reader.video.duration)return message('Enter an end time between this frame and the end of the video.');const targets=frames.filter(f=>f.time>=start&&f.time<=end);if(!confirm(`Mark ${targets.length} frames from ${start.toFixed(2)} to ${end.toFixed(2)} s as not visible (${reason})? This replaces their current ball labels.`))return;undo.push({group:targets.map(f=>({id:f.id,value:structuredClone(corrections[f.id]||initialCorrection(f))})),teams:{...trackTeams}});for(const f of targets){const c=corrections[f.id] ||= initialCorrection(f);c.ball={status:'not_visible',bbox:null,reason,reviewed:true};}save();controls();paint();message(`Saved ${targets.length} unseen-ball labels.`);};
 $('export').onclick=()=>download(JSON.stringify({...stored(),sourceFrames:frames}),'pitchcam-corrections.json');$('match').onchange=save;
 $('restore').onchange=async()=>{try{const r=JSON.parse(await $('restore').files[0].text());if(r.schema!==SCHEMA||r.fingerprint!==fingerprint)throw Error('These corrections belong to another results file.');for(const [id,c] of Object.entries(r.corrections||{})){const f=frames.find(f=>f.id===id);if(!f)throw Error('Unknown frame in corrections.');validateCorrection(c,f);}if(!confirm('Replace this session’s corrections with this backup?'))return;corrections=r.corrections;trackTeams=Object.fromEntries(Object.entries(r.trackTeams||{}).filter(([id,team])=>['A','B','unknown'].includes(team)));$('match').value=r.match||'';undo=[];save();controls();paint();message('Corrections restored.');}catch(e){message(e.message);}};
@@ -84,9 +86,10 @@ $('zoom-in').onclick=()=>{if(ready){const t=layout();zoomAt(1.5,t.r.width/2,t.r.
 canvas.addEventListener('wheel',e=>{if(!ready)return;e.preventDefault();const t=layout();zoomAt(e.deltaY<0?1.15:1/1.15,e.clientX-t.r.left,e.clientY-t.r.top);},{passive:false});
 canvas.onpointerdown=e=>{if(!ready)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===2){if(gesture?.backup){corrections[frame().id]=gesture.backup;if(gesture.edit||gesture.landmark||gesture.lineEdit)undo.pop();}gesture={pinch:true};paint();return;}const p=clamp(point(e)),c=correction(),t=layout();
  if(space||e.button===1){gesture={pan:true,last:[e.clientX,e.clientY]};return;}
+ if(remoteReview?.readOnly(frame().id))return;
  if(mode==='point'&&layer==='pitch'){change(c=>{c.landmarks.push({label:$('new-landmark-label').value.trim(),xy:p,visibility:'visible'});selected=c.landmarks.length-1;});mode='select';message('');return;}
  if(layer==='pitch'&&mode!=='point'){
-  const activeLine=selectedPitchLine();const candidates=mode==='line'?(activeLine?[activeLine]:[]):[...c.lines].reverse();
+  const candidates=editableLines(mode,c.lines,selectedPitchLine()?.id);
   const hit=candidates.map(l=>({line:l,part:lineHit(p,l,18/t.s)})).find(h=>h.part);
   if(hit){snapshot();selected='line:'+hit.line.id;gesture={lineEdit:true,part:hit.part,start:p,original:structuredClone(hit.line),backup:structuredClone(c)};controls();paint();return;}
   if(mode==='line'){gesture={lineDraw:true,start:p,end:p,backup:structuredClone(c)};paint();return;}
@@ -112,3 +115,34 @@ $('training').onclick=async()=>{if(!ready||busy)return;if(!$('match').value.trim
  c.fillStyle='#15251a';c.fillRect(0,0,720,460);c.strokeStyle='#829985';c.lineWidth=2;c.strokeRect(sx(0),sy(0),648,378);c.beginPath();c.moveTo(sx(60),sy(0));c.lineTo(sx(60),sy(70));c.stroke();c.beginPath();c.arc(sx(60),sy(35),9.15*5.4,0,Math.PI*2);c.stroke();for(const [x,w]of[[0,20.15],[99.85,20.15]])c.strokeRect(sx(x),sy(14.5),w*5.4,41*5.4);for(const x of[0,114.5])c.strokeRect(sx(x),sy(25.84),5.5*5.4,18.32*5.4);
  c.font='15px system-ui';vertices.forEach(([x,y],i)=>{const px=sx(x),py=sy(y);c.fillStyle='#d4fb94';c.beginPath();c.arc(px,py,3,0,Math.PI*2);c.fill();c.fillText(labels[i],px+(x>115?-23:5),py+(i%2===0?-6:16));});
 }
+
+async function confirmRemote(){
+ const f=frame(),c=correction();if(remoteReview.readOnly(f.id))return;
+ try{
+  if(layer==='ball')c.ball.reviewed=true;else c.pitchReviewed=true;
+  validateCorrection(c,f);busy=true;ready=false;$('confirm').disabled=true;$('saved').textContent='Saving to site…';
+  await remoteReview.confirm(f.id,c);$('saved').textContent='Saved to site';busy=false;ready=true;
+  const remaining=queue.map((id,i)=>({id,i})).filter(q=>!remoteReview.readOnly(q.id));
+  if(!remaining.length){showRemoteCompletion();return;}
+  const next=remaining.find(q=>q.i>index)||remaining[0];await go(next.i);
+ }catch(e){if(layer==='ball')c.ball.reviewed=false;else c.pitchReviewed=false;busy=false;ready=true;message(e.message+' Your batch is not marked completed.');$('saved').textContent='Save failed — retry before leaving';controls();}
+}
+function showRemoteCompletion(){
+ $('work').hidden=true;$('setup').hidden=true;const section=document.createElement('section');section.className='card';
+ const heading=document.createElement('h1');heading.textContent=remoteReview.job.title+' completed';const p=document.createElement('p');p.textContent=remoteReview.items.length+' / '+remoteReview.items.length+' completed. Everything is saved to the site. No files to send back.';
+ const a=document.createElement('a');a.className='primary button-link';a.href='/?batches=1';a.textContent='Back to my batches';section.append(heading,p,a);document.querySelector('main').append(section);message('');
+}
+async function openRemoteJob(jobId){
+ try{
+  $('setup').hidden=true;message('Opening your assigned batch…');remoteReview=await RemoteReview.open(jobId);
+  frames=remoteReview.frames;corrections=remoteReview.corrections;trackTeams={};fingerprint='job-'+jobId;queue=frames.map(f=>f.id);index=0;
+  layer=remoteReview.job.kind==='ball'?'ball':'pitch';mode=layer==='pitch'?'line':'select';
+  remoteReview.onSaved=()=>{$('saved').textContent='Saved to site';};remoteReview.onError=e=>{message(e.message);$('saved').textContent='Save failed — retry before leaving';};
+  document.querySelectorAll('[data-layer]').forEach(b=>b.hidden=b.dataset.layer!==layer);document.querySelector('.tabs').style.gridTemplateColumns='1fr';
+  for(const id of ['change-files','export','training','restore','spacing','focus']){const n=$(id);n.hidden=true;if(n.closest('label'))n.closest('label').hidden=true;}
+  $('training').closest('section').hidden=true;$('bulk-absence').closest('details').hidden=true;
+  if(!frames.length)throw Error('This batch has no frames.');
+  $('work').hidden=false;const first=frames.findIndex(f=>!remoteReview.readOnly(f.id));if(first<0){showRemoteCompletion();return;}await go(first);
+ }catch(e){message(e.message);const link=document.createElement('a');link.href='/?batches=1';link.textContent='Back to your batches / sign in';document.querySelector('main').append(link);}
+}
+const remoteId=new URL(location.href).searchParams.get('job');if(remoteId)openRemoteJob(remoteId);

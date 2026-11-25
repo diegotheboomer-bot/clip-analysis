@@ -665,3 +665,40 @@ test("thumbnails retain assignment protection and older clips fall back to their
   );
   assert.equal((await f.call(frame.thumbnail)).response.status, 401);
 });
+
+async function makeBundle(f,admin,{count=2,memberId,name='Friend',requestId=crypto.randomUUID()}={}){
+ const result=await f.call('/api/admin/review-bundles',{method:'POST',cookie:admin,body:{count,matchGroup:'match-1',memberId,name,requestId}});return {result,data:await result.data()};
+}
+const pitchAnswer={lines:[{id:'line-a',start:[20,30],end:[500,90],kind:'unknown',visibility:'visible'},{id:'line-b',start:[20,30],end:[650,120],kind:'unknown',visibility:'inferred'}],landmarks:[]};
+test('friend batches reserve separate frames, enforce codes and lock pitch until ball completion',async()=>{
+ const f=fixture(),admin=await owner(f);await clip(f,admin,8);const {result,data}=await makeBundle(f,admin);assert.equal(result.response.status,201);assert.match(data.code,/^\d{4}$/);
+ const login=await f.call('/api/login',{method:'POST',body:{code:data.code}}),cookie=login.cookie;
+ const list=await(await f.call('/api/review-jobs',{cookie})).data();assert.equal(list.jobs.length,2);const ball=list.jobs.find(j=>j.kind==='ball'),pitch=list.jobs.find(j=>j.kind==='pitch');assert.equal(pitch.locked,1);
+ assert.equal((await f.call('/api/review-jobs/'+pitch.id,{cookie})).response.status,409);
+ const b=await(await f.call('/api/review-jobs/'+ball.id,{cookie})).data();assert.equal(b.items.length,2);assert.equal((await f.call(b.items[0].frame.image)).response.status,401);assert.equal((await f.call(b.items[0].frame.image,{cookie})).response.status,200);
+ const other=await reviewer(f,admin,'Other');assert.equal((await f.call('/api/review-jobs/'+ball.id,{cookie:other.cookie})).response.status,403);assert.equal((await f.call(b.items[0].frame.image,{cookie:other.cookie})).response.status,403);
+ assert.equal((await f.call('/api/work',{cookie,method:'POST'})).response.status,403);
+ for(const item of b.items){const saved=await f.call(`/api/review-jobs/${ball.id}/items/${item.id}`,{cookie,method:'PUT',body:{version:0,operationId:crypto.randomUUID(),completed:true,answer:{ball:{status:'visible',bbox:[20,20,6,6]}}}});assert.equal(saved.response.status,200);}
+ const p=await(await f.call('/api/review-jobs/'+pitch.id,{cookie})).data();assert.equal(p.items.length,2);assert.ok(p.items.every(i=>!b.items.some(x=>x.frame.id===i.frame.id)));
+ const item=p.items[0];const path=`/api/review-jobs/${pitch.id}/items/${item.id}`;const operation=crypto.randomUUID();
+ const payload={version:0,operationId:operation,completed:false,answer:pitchAnswer};const draft=await f.call(path,{cookie,method:'PUT',body:payload});assert.equal(draft.response.status,200);assert.equal((await draft.data()).status,'draft');assert.equal((await f.call(path,{cookie,method:'PUT',body:payload})).response.status,200);
+ const stale=await f.call(path,{cookie,method:'PUT',body:{...payload,operationId:crypto.randomUUID()}});assert.equal(stale.response.status,409);
+ const done=await f.call(path,{cookie,method:'PUT',body:{...payload,version:1,operationId:crypto.randomUUID(),completed:true}});assert.equal(done.response.status,200);
+ const exported=await f.call('/api/admin/review-modules/export',{cookie:admin});const files=unzipSync(new Uint8Array(await exported.response.arrayBuffer()));const pitchLabels=JSON.parse(strFromU8(files['pitch-lines.json']));assert.equal(pitchLabels.length,1);assert.deepEqual(pitchLabels[0].lines.map(l=>l.id),['line-a']);const history=JSON.parse(strFromU8(files['review-history.json']));assert.equal(history.find(h=>h.task==='pitch').answer.lines.length,2);
+ assert.equal((await f.call('/api/admin/review-modules/export',{cookie})).response.status,403);
+});
+test('repeat batch requests are idempotent and task reservations cannot overlap across reviewers',async()=>{
+ const f=fixture(),admin=await owner(f);await clip(f,admin,12);const key=crypto.randomUUID();const a=await makeBundle(f,admin,{requestId:key});assert.equal(a.result.response.status,201);const again=await makeBundle(f,admin,{requestId:key});assert.equal(again.data.existing,true);assert.equal(again.data.jobs[0].member_id,a.data.memberId);assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM review_jobs').get().n,2);
+ const b=await makeBundle(f,admin);assert.equal(b.result.response.status,201);const dup=f.sqlite.prepare('SELECT frame_id,kind,count(*) AS n FROM review_items GROUP BY frame_id,kind HAVING count(*)>1').all();assert.deepEqual(dup,[]);
+ const old=await reviewer(f,admin,'Old queue');const work=await(await f.call('/api/work',{cookie:old.cookie,method:'POST'})).data();const reserved=f.sqlite.prepare("SELECT frame_id FROM review_items WHERE kind='ball'").all().map(r=>r.frame_id);assert.ok(work.batch.frames.every(x=>!reserved.includes(x.id)));
+});
+test('pitch drafts are not training labels and invalid or unassigned saves are rejected',async()=>{
+ const f=fixture(),admin=await owner(f);await clip(f,admin,4);const {data}=await makeBundle(f,admin,{count:1});const login=await f.call('/api/login',{method:'POST',body:{code:data.code}}),cookie=login.cookie;const ball=data.jobs.find(j=>j.kind==='ball');const b=await(await f.call('/api/review-jobs/'+ball.id,{cookie})).data();const item=b.items[0];
+ const path=`/api/review-jobs/${ball.id}/items/${item.id}`;
+ assert.equal((await f.call(path,{method:'PUT',cookie,body:{version:0,operationId:crypto.randomUUID(),completed:true,answer:{ball:{status:'visible',bbox:[-1,0,10,10]}}}})).response.status,400);
+ const stranger=await reviewer(f,admin,'Stranger');assert.equal((await f.call(path,{method:'PUT',cookie:stranger.cookie,body:{version:0,operationId:crypto.randomUUID(),completed:true,answer:{ball:{status:'unsure'}}}})).response.status,403);
+ const exported=await f.call('/api/admin/review-modules/export',{cookie:admin});const files=unzipSync(new Uint8Array(await exported.response.arrayBuffer()));assert.equal(JSON.parse(strFromU8(files['ball-coco.json'])).images.length,0);assert.equal(JSON.parse(strFromU8(files['pitch-lines.json'])).length,0);
+});
+test('assignment races roll back whole batches without duplicating legacy queue work',async()=>{
+ const f=fixture(),admin=await owner(f);await clip(f,admin,6);f.DB.beforeBatch=()=>f.sqlite.prepare("UPDATE frames SET state='assigned',assignee=(SELECT id FROM members ORDER BY created_at DESC LIMIT 1) WHERE id=(SELECT id FROM frames WHERE seq=1 LIMIT 1)").run();const result=await makeBundle(f,admin,{count:2});assert.equal(result.result.response.status,409);assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM review_jobs').get().n,0);assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM review_items').get().n,0);
+});

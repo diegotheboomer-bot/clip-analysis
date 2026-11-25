@@ -79,3 +79,15 @@ export const attempts = sqliteTable("login_attempts", {
   attempts: integer("attempts").notNull(),
   expiresAt: integer("expires_at").notNull(),
 });
+
+export const reviewJobs = sqliteTable('review_jobs', {
+  id:text('id').primaryKey(),requestKey:text('request_key').notNull(),memberId:text('member_id').notNull().references(()=>members.id),
+  kind:text('kind').notNull(),title:text('title').notNull(),dependsOn:text('depends_on'),createdAt:integer('created_at').notNull(),
+}, t=>[uniqueIndex('review_job_request').on(t.requestKey,t.kind)]);
+export const reviewItems = sqliteTable('review_items', {
+  id:text('id').primaryKey(),jobId:text('job_id').notNull().references(()=>reviewJobs.id),frameId:text('frame_id').notNull().references(()=>frames.id),kind:text('kind').notNull(),
+  position:integer('position').notNull(),status:text('status').notNull().default('pending'),answer:text('answer'),version:integer('version').notNull().default(0),lastOperation:text('last_operation'),updatedAt:integer('updated_at'),
+}, t=>[uniqueIndex('review_frame_task').on(t.frameId,t.kind),index('review_job_items').on(t.jobId,t.position)]);
+export const reviewChanges = sqliteTable('review_changes', {
+  operationId:text('operation_id').primaryKey(),itemId:text('item_id').notNull().references(()=>reviewItems.id),reviewerId:text('reviewer_id').references(()=>members.id),answer:text('answer').notNull(),completed:integer('completed').notNull(),createdAt:integer('created_at').notNull(),
+});

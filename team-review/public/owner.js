@@ -30,6 +30,13 @@ function action(text, fn) {
 }
 async function refresh() {
   const data = await api("/api/admin/dashboard");
+  const chosenMember=$('batch-member').value,chosenMatch=$('batch-match').value;
+  const memberOptions=[['','New reviewer'],...data.members.filter(m=>m.active).map(m=>[m.id,m.name])];
+  for(const [id,choices,chosen] of [['batch-member',memberOptions,chosenMember],['batch-match',[...new Set(data.clips.filter(c=>c.status==='ready').map(c=>c.match_group))].map(m=>[m,m]),chosenMatch]]){
+    $(id).replaceChildren(...choices.map(([value,name])=>{const o=el('option',name);o.value=value;return o;}));if(choices.some(([v])=>v===chosen))$(id).value=chosen;
+  }
+  const work=await api('/api/admin/review-jobs');
+  $('batch-list').replaceChildren(...work.jobs.map(j=>{const card=el('article',undefined,'job-card');card.append(el('strong',j.title),el('p',j.reviewer_name),el('p',`${j.done||0} / ${j.total} completed · ${j.locked?'Locked until ball is done':Number(j.done)===Number(j.total)?'Completed':'Ready'}`));return card;}));
   $("clip-list").replaceChildren(
     ...data.clips.map((clip) => {
       const card = el("div", undefined, "clip-card"),
@@ -169,6 +176,16 @@ async function reviews() {
 }
 export async function initOwner() {
   await refresh();
+  let batchRequest=null;
+  $('batch-form').onsubmit=async event=>{
+    event.preventDefault();event.submitter.disabled=true;
+    try{
+      batchRequest ||= crypto.randomUUID();
+      const result=await api('/api/admin/review-bundles',{method:'POST',body:JSON.stringify({requestId:batchRequest,memberId:$('batch-member').value||undefined,name:$('batch-name').value||'Friend reviewer',matchGroup:$('batch-match').value,count:Number($('batch-count').value)})});
+      $('batch-invite').hidden=false;$('batch-invite').replaceChildren(el('strong',result.code?'Code: '+result.code:'Use this reviewer’s existing code'),el('p',location.origin+'/?batches=1'),el('p','First: ball frames. Then: pitch lines. Everything saves to the site; no files to send back.'));
+      $('batch-feedback').textContent='Batches created. Share the link and code privately.';batchRequest=null;await refresh();
+    }catch(e){$('batch-feedback').textContent=e.message;}finally{event.submitter.disabled=false;}
+  };
   const model = await api("/api/admin/model-info");
   $("model-status").textContent = model.ready
     ? model.name + " ready"

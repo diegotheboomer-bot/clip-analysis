@@ -1,4 +1,9 @@
 export const LINE_KINDS = ['unknown','touchline','goal_line','halfway','penalty_area','goal_area'];
+export function editableLines(mode,lines,activeId){
+  if(mode!=='select')return [];
+  const active=lines.find(l=>l.id===activeId);
+  return [...(active?[active]:[]),...lines.filter(l=>l!==active).reverse()];
+}
 export function validPoint(p) { return Array.isArray(p) && p.length===2 && p.every(n=>typeof n==='number' && Number.isFinite(n)); }
 export function makePitchLine(start,end,{kind='unknown',visibility='visible',id='line'}={}) {
   if(!validPoint(start)||!validPoint(end)||Math.hypot(end[0]-start[0],end[1]-start[1])<2)throw Error('Drag a longer line.');

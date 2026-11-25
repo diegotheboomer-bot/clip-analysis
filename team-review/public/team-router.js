@@ -53,6 +53,8 @@ async function enter() {
     $("owner-dashboard").hidden = false;
     await initOwner();
   } else {
+    const {jobs}=await api('/api/review-jobs');
+    if(jobs.length){$('help-button').hidden=true;$('results-button').hidden=true;const {showReviewJobs}=await import('./review-dashboard.mjs');showReviewJobs(jobs);return;}
     const work = await api("/api/work", { method: "POST" });
     window.PITCHCAM_TEAM = { ...work, user, api };
     if (!work.batch.frames.length) {

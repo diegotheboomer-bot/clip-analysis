@@ -1187,3 +1187,4 @@ select {
     bottom: -14px;
   }
 }
+.job-dashboard{max-width:960px;margin:24px auto;padding:20px}.job-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px}.job-card{border:1px solid #415446;border-radius:14px;background:#19251d;padding:24px;display:grid;gap:14px}.job-card h2,.job-card p{margin:0}.job-kind{font-size:14px;color:#b6d38f;letter-spacing:.08em}.job-card progress{width:100%;accent-color:#cfff75}.job-completed{color:#cfff75}.job-card .button-link{text-align:center}

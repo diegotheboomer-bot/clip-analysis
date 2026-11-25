@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makePitchLine, lineHit, movePitchLine } from '../public/pitch-lines.mjs';
+import { makePitchLine, lineHit, movePitchLine, editableLines } from '../public/pitch-lines.mjs';
 import { initialCorrection, trainingAnnotations, validateCorrection } from '../public/prediction-core.mjs';
 const f={id:'0',width:1920,height:1080,time:0,selected:null,candidates:[],players:[],landmarks:[]};
+test('drawing from a shared corner never selects or mutates a previous line',()=>{
+ const corner=[20,30],a=makePitchLine(corner,[500,30],{id:'a'}),b=makePitchLine(corner,[20,600],{id:'b'});
+ assert.deepEqual(editableLines('line',[a,b],'a'),[]);const moved=movePitchLine(b,'start',[45,60],corner,f);assert.deepEqual(a.start,[20,30]);assert.deepEqual(b.start,[20,30]);assert.deepEqual(moved.start,[45,60]);assert.equal(editableLines('select',[a,b],'a')[0],a);
+});
 test('straight lines retain diagonal perspective and reject zero-length or invalid input',()=>{
  const l=makePitchLine([20,30],[500,125],{id:'a',kind:'touchline'});assert.deepEqual(l.end,[500,125]);assert.throws(()=>makePitchLine([20,20],[20,20]));assert.throws(()=>makePitchLine([NaN,0],[20,20]));
 });

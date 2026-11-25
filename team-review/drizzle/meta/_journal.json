@@ -15,6 +15,13 @@
       "when": 1795607422383,
       "tag": "0001_gifted_changeling",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795633719168,
+      "tag": "0002_chunky_the_liberteens",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { Zip, ZipPassThrough } from "fflate";
 import { validateAnswer, needsBox, REASONS } from "./labels.mjs";
 import assets from "../generated/assets.mjs";
+import { reviewJobsRoute, reviewMediaAllowed } from './review-jobs.mjs';
 
 const now = () => Math.floor(Date.now() / 1000);
 const id = () => crypto.randomUUID();
@@ -177,7 +178,7 @@ async function claim(env, user) {
     env,
     `UPDATE frames SET assignee=?,state='assigned',assigned_at=? WHERE id IN (
     SELECT f.id FROM frames f JOIN clips c ON c.id=f.clip_id WHERE f.state='pending'
-    AND f.assignee IS NULL AND c.status='ready' ORDER BY c.created_at,f.seq LIMIT 20
+    AND f.assignee IS NULL AND c.status='ready' AND NOT EXISTS(SELECT 1 FROM review_items ri WHERE ri.frame_id=f.id AND ri.kind='ball') ORDER BY c.created_at,f.seq LIMIT 20
   ) AND NOT EXISTS(SELECT 1 FROM frames WHERE assignee=? AND state='assigned')`,
     user.member_id,
     now(),
@@ -597,11 +598,14 @@ export async function api(request, env, ctx) {
     });
   }
   const user = await session(request, env, path.startsWith("/api/admin/"));
+  const jobResponse=await reviewJobsRoute(request,env,ctx,user,{first,rows,stmt,now,id,fail,body,json,newCode,frameView});
+  if(jobResponse)return jobResponse;
   if (path === "/api/me")
     return json({ role: user.role, name: user.name || "Organiser" });
   if (path === "/api/work" && method === "POST") {
     if (user.role !== "reviewer")
       fail(403, "Use a reviewer's code to claim work.");
+    if(await first(env,'SELECT id FROM review_jobs WHERE member_id=? LIMIT 1',user.member_id))fail(403,'Open your assigned review batches.');
     return json(await claim(env, user));
   }
   if (path === "/api/labels/bulk" && method === "PUT")
@@ -618,7 +622,7 @@ export async function api(request, env, ctx) {
       mediaMatch[1],
     );
     if (!f) fail(404, "Frame not found.");
-    if (user.role !== "owner" && f.assignee !== user.member_id)
+    if (user.role !== "owner" && f.assignee !== user.member_id && !await reviewMediaAllowed(env,user,f.id,first))
       fail(403, "This frame belongs to another reviewer.");
     let object = await env.BUCKET.get(
       assetKey(f.clip_id, f.seq, mediaMatch[2]),
@@ -638,7 +642,7 @@ export async function api(request, env, ctx) {
     const clips = await rows(
       env,
       `SELECT c.*,(SELECT COUNT(*) FROM frames f WHERE f.clip_id=c.id) AS imported,
-      (SELECT COUNT(*) FROM frames f WHERE f.clip_id=c.id AND f.state='done') AS done,
+      ((SELECT COUNT(*) FROM frames f WHERE f.clip_id=c.id AND f.state='done')+(SELECT COUNT(*) FROM review_items ri JOIN frames rf ON rf.id=ri.frame_id WHERE rf.clip_id=c.id AND ri.kind='ball' AND ri.status='done')) AS done,
       (SELECT COUNT(*) FROM frames f WHERE f.clip_id=c.id AND f.state='assigned') AS assigned FROM clips c ORDER BY created_at DESC`,
     );
     const members = await rows(

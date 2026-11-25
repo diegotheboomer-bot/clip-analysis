@@ -79,3 +79,11 @@ Confirm each layer independently. Training ZIP exports reviewed JPEG frames, sep
 ## Pitch line review
 
 The editor opens on Pitch. Drag a straight segment, choose a marking type, then move either endpoint or the entire segment. Solid lines are explicitly visible; dashed lines are inferred continuations. Hypotheses are retained in correction backups but never included in `pitch-lines.json` training labels or metric calibration. Split a visible segment and an occluded continuation into separate lines. The new line UI preserves older correction backups without line fields and existing ball/player editing. `Correct & next` explicitly reviews the selected layer only. Review spacing and queue filters are under Review settings. No model inference is run by this editor.
+
+## Code-protected friend batches
+
+The organiser can create a ball batch and a pitch-line batch for an existing reviewer or issue a new personal code. The default is 50 frames of each task, sampled across ready clips from one match. Frame/task reservations are unique and exclude the legacy ball queue. Ball and pitch jobs use different frames within a bundle. A database trigger prevents races with legacy assignments.
+
+Friends log in at `/?batches=1`. Ball work comes first; pitch stays locked until the ball batch is completed. The shared correction editor loads protected frame images from the site, autosaves drafts to the server, and marks an item done only on **Correct & next**. Finished reviewer items are read-only; saved labels and revision history remain available to the organiser. No JSON or video upload is needed by the friend, and no exports are exposed in their editor.
+
+Pitch drawing requires only line geometry and visible/assumed evidence, with no pitch-part label. Draw mode always creates an independent line, including at existing corners; Move mode edits existing segments. Assumed lines and hidden/uncertain ball labels remain in history but are excluded from visible training labels. `/api/admin/review-modules/export` exports completed ball COCO, visible pitch lines/landmarks, image JPEGs and source/answer provenance. Creating batches and correcting labels does not launch inference or model training.
