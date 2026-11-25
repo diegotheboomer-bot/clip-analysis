@@ -229,6 +229,19 @@
                 </button>
               </div>
             </div>
+            <div class="absence-tools" aria-label="Quick ball absence labels">
+              <div class="absence-single">
+                <button id="outside-next" class="secondary">
+                  Outside &amp; next
+                </button>
+                <button id="unknown-next" class="secondary">
+                  Can't tell &amp; next
+                </button>
+              </div>
+              <button id="mark-run" class="secondary">
+                Mark several frames
+              </button>
+            </div>
             <p class="hint" id="overview-hint">
               Pinch with two fingers to zoom. Drag one finger from one corner of
               the ball to the opposite corner. Lift to finish.
@@ -352,6 +365,38 @@
         </details>
       </section>
     </main>
+    <dialog id="run-dialog" aria-labelledby="run-title">
+      <div class="run-heading">
+        <h2 id="run-title">Mark a run without a visible ball</h2>
+        <button id="run-close" class="secondary">Cancel</button>
+      </div>
+      <p id="run-source"></p>
+      <p>Tap the last frame you want to include. Saved reviews are kept.</p>
+      <fieldset class="run-reasons">
+        <legend>What happened to the ball?</legend>
+        <button data-run-reason="outside_frame" type="button">
+          Outside frame
+        </button>
+        <button data-run-reason="hidden" type="button">Hidden</button>
+        <button data-run-reason="unknown" type="button">Can't tell</button>
+      </fieldset>
+      <p class="run-guidance">
+        Choose Outside frame only when you know the ball left the image. If you
+        lost sight of it, choose Can't tell. Orange outlines show AI candidates
+        to check.
+      </p>
+      <button id="run-all" class="secondary">Select all shown</button>
+      <div
+        id="run-grid"
+        class="run-grid"
+        aria-label="Tap the last frame in the run"
+      ></div>
+      <div class="run-footer">
+        <p id="run-summary" role="status"></p>
+        <p id="run-error" role="alert"></p>
+        <button id="run-submit" class="primary">Mark frames</button>
+      </div>
+    </dialog>
     <dialog id="help-dialog">
       <button
         class="dialog-close icon-button"

@@ -1,5 +1,5 @@
 import { Zip, ZipPassThrough } from "fflate";
-import { validateAnswer, needsBox } from "./labels.mjs";
+import { validateAnswer, needsBox, REASONS } from "./labels.mjs";
 import assets from "../generated/assets.mjs";
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -155,6 +155,7 @@ const assetKey = (clip, seq, kind) => `clips/${clip}/${seq}/${kind}.jpg`;
 function frameView(f) {
   return {
     id: f.id,
+    clipId: f.clip_id,
     source: f.title,
     matchGroup: f.match_group,
     frameIndex: null,
@@ -163,6 +164,7 @@ function frameView(f) {
     height: f.height,
     version: f.version,
     image: `/media/${f.id}/image`,
+    thumbnail: `/media/${f.id}/thumb`,
     before: `/media/${f.id}/before`,
     after: `/media/${f.id}/after`,
     proposal: JSON.parse(f.proposal),
@@ -266,6 +268,137 @@ async function saveLabel(env, frameId, user, data) {
     fail(409, "A newer label is saved for this frame. Reload before editing.");
   return { saved: true, version: data.version + 1 };
 }
+async function saveAbsenceRun(env, user, data) {
+  if (user.role !== "reviewer")
+    fail(403, "Use a reviewer's code to mark a run.");
+  if (
+    !REASONS.includes(data.reason) ||
+    !Array.isArray(data.frames) ||
+    data.frames.length < 1 ||
+    data.frames.length > 20
+  )
+    fail(400, "Choose a reason and between 1 and 20 assigned frames.");
+  const targets = data.frames.map((f) => ({
+    id: f.id,
+    version: f.version,
+    operationId: f.operationId,
+  }));
+  if (
+    targets.some(
+      (f) =>
+        !/^[a-zA-Z0-9-]{1,90}$/.test(f.id || "") ||
+        !Number.isInteger(f.version) ||
+        f.version < 0 ||
+        !/^[a-zA-Z0-9-]{16,80}$/.test(f.operationId || ""),
+    ) ||
+    new Set(targets.map((f) => f.id)).size !== targets.length ||
+    new Set(targets.map((f) => f.operationId)).size !== targets.length
+  )
+    fail(400, "Invalid frame selection.");
+  const answer = validateAnswer(
+    { status: "not_visible", reason: data.reason },
+    {},
+  );
+  const answerJson = JSON.stringify(answer),
+    payload = JSON.stringify(targets),
+    count = targets.length;
+  const snapshot = () =>
+    rows(
+      env,
+      `SELECT f.*,l.answer AS saved_answer FROM frames f LEFT JOIN labels l ON l.frame_id=f.id
+    WHERE f.id IN (SELECT json_extract(value,'$.id') FROM json_each(?))`,
+      payload,
+    );
+  let frames = await snapshot();
+  const allowed =
+    frames.length === count &&
+    frames.every((f) => f.assignee === user.member_id);
+  if (!allowed)
+    fail(409, "These frames are no longer assigned to you. Reload your work.");
+  const byId = new Map(frames.map((f) => [f.id, f]));
+  const complete = () =>
+    targets.every((t) => {
+      const f = byId.get(t.id);
+      return (
+        f?.last_operation === t.operationId &&
+        f.state === "done" &&
+        f.saved_answer === answerJson
+      );
+    });
+  const result = () => ({
+    saved: true,
+    frames: targets.map((t) => ({ id: t.id, version: byId.get(t.id).version })),
+  });
+  if (complete()) return result();
+  const clip = frames[0].clip_id;
+  if (frames.some((f) => f.clip_id !== clip))
+    fail(400, "Choose frames from one clip at a time.");
+  if (
+    targets.some(
+      (t) =>
+        byId.get(t.id).state !== "assigned" ||
+        byId.get(t.id).version !== t.version,
+    )
+  )
+    fail(
+      409,
+      "A frame was already reviewed or changed. Reload the selection; nothing was marked.",
+    );
+  // All selected versions must still match at write time. D1 executes this
+  // batch in one transaction. changes() gates the dependent label/history
+  // writes, so a failed group guard cannot produce a partial run.
+  const written = await env.DB.batch([
+    stmt(
+      env,
+      `WITH targets AS MATERIALIZED (
+        SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.version') AS version,json_extract(value,'$.operationId') AS operation
+        FROM json_each(?)
+      ), eligible AS MATERIALIZED (
+        SELECT f.id FROM frames f JOIN targets t ON t.id=f.id
+        WHERE f.assignee=? AND f.clip_id=? AND f.state='assigned' AND f.version=t.version
+      ), gate AS MATERIALIZED (SELECT COUNT(*) AS n FROM eligible)
+      UPDATE frames SET state='done',version=version+1,last_operation=(SELECT t.operation FROM targets t WHERE t.id=frames.id)
+      WHERE id IN (SELECT id FROM eligible) AND (SELECT n FROM gate)=?`,
+      payload,
+      user.member_id,
+      clip,
+      count,
+    ),
+    stmt(
+      env,
+      `INSERT INTO labels(frame_id,reviewer_id,answer,updated_at)
+      SELECT f.id,?,?,? FROM frames f JOIN json_each(?) t ON f.id=json_extract(t.value,'$.id')
+      WHERE changes()=? AND f.last_operation=json_extract(t.value,'$.operationId')
+      ON CONFLICT(frame_id) DO UPDATE SET answer=excluded.answer,reviewer_id=excluded.reviewer_id,updated_at=excluded.updated_at`,
+      user.member_id,
+      answerJson,
+      now(),
+      payload,
+      count,
+    ),
+    stmt(
+      env,
+      `INSERT INTO revisions(operation_id,frame_id,reviewer_id,answer,created_at)
+      SELECT json_extract(t.value,'$.operationId'),f.id,?,?,? FROM frames f JOIN json_each(?) t ON f.id=json_extract(t.value,'$.id')
+      WHERE changes()=? AND f.last_operation=json_extract(t.value,'$.operationId')`,
+      user.member_id,
+      answerJson,
+      now(),
+      payload,
+      count,
+    ),
+  ]);
+  frames = await snapshot();
+  byId.clear();
+  for (const f of frames) byId.set(f.id, f);
+  if (!written[0].meta.changes && !complete())
+    fail(
+      409,
+      "Your selection changed before saving. Nothing was marked. Reload your work.",
+    );
+  return result();
+}
+
 function validProposal(value, f) {
   if (value === null || value === undefined) return null;
   let clean;
@@ -471,12 +604,13 @@ export async function api(request, env, ctx) {
       fail(403, "Use a reviewer's code to claim work.");
     return json(await claim(env, user));
   }
+  if (path === "/api/labels/bulk" && method === "PUT")
+    return json(await saveAbsenceRun(env, user, await body(request)));
   const labelMatch = /^\/api\/labels\/([a-zA-Z0-9-]+)$/.exec(path);
   if (labelMatch && method === "PUT")
     return json(await saveLabel(env, labelMatch[1], user, await body(request)));
-  const mediaMatch = /^\/media\/([a-zA-Z0-9-]+)\/(image|before|after)$/.exec(
-    path,
-  );
+  const mediaMatch =
+    /^\/media\/([a-zA-Z0-9-]+)\/(image|before|after|thumb)$/.exec(path);
   if (mediaMatch && method === "GET") {
     const f = await first(
       env,
@@ -486,9 +620,11 @@ export async function api(request, env, ctx) {
     if (!f) fail(404, "Frame not found.");
     if (user.role !== "owner" && f.assignee !== user.member_id)
       fail(403, "This frame belongs to another reviewer.");
-    const object = await env.BUCKET.get(
+    let object = await env.BUCKET.get(
       assetKey(f.clip_id, f.seq, mediaMatch[2]),
     );
+    if (!object && mediaMatch[2] === "thumb")
+      object = await env.BUCKET.get(assetKey(f.clip_id, f.seq, "image"));
     if (!object) fail(404, "Image not found.");
     return new Response(object.body, {
       headers: {
@@ -602,7 +738,7 @@ export async function api(request, env, ctx) {
     );
   }
   const assetMatch =
-    /^\/api\/admin\/assets\/([a-zA-Z0-9-]+)\/(\d+)\/(image|before|after)$/.exec(
+    /^\/api\/admin\/assets\/([a-zA-Z0-9-]+)\/(\d+)\/(image|before|after|thumb)$/.exec(
       path,
     );
   if (assetMatch && method === "PUT") {

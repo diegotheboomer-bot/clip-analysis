@@ -95,7 +95,7 @@ async function fingerprint(file, group) {
     .map((v) => v.toString(16).padStart(2, "0"))
     .join("");
 }
-async function capture(video, time, canvas) {
+async function capture(video, time, canvas, withThumbnail = false) {
   const target = Math.max(0, Math.min(video.duration - 0.05, time));
   if (Math.abs(video.currentTime - target) > 0.001)
     await once(video, "seeked", () => {
@@ -107,7 +107,19 @@ async function capture(video, time, canvas) {
     canvas.toBlob(resolve, "image/jpeg", 0.93),
   );
   if (!blob) throw new Error("Couldn't encode this frame.");
-  return { blob, time: video.currentTime };
+  let thumbnail;
+  if (withThumbnail) {
+    const small = document.createElement("canvas"),
+      scale = Math.min(1, 320 / canvas.width);
+    small.width = Math.max(1, Math.round(canvas.width * scale));
+    small.height = Math.max(1, Math.round(canvas.height * scale));
+    small.getContext("2d").drawImage(canvas, 0, 0, small.width, small.height);
+    thumbnail = await new Promise((resolve) =>
+      small.toBlob(resolve, "image/jpeg", 0.8),
+    );
+    if (!thumbnail) throw new Error("Couldn't encode the frame thumbnail.");
+  }
+  return { blob, thumbnail, time: video.currentTime };
 }
 export async function importClips({
   files,
@@ -185,7 +197,7 @@ export async function importClips({
             expected +
             " · finding the ball",
         );
-        const current = await capture(video, time, canvas);
+        const current = await capture(video, time, canvas, true);
         const bitmap = await createImageBitmap(canvas);
         const prediction = await predict(bitmap);
         const before = await capture(video, time - 0.15, canvas);
@@ -202,6 +214,7 @@ export async function importClips({
         await Promise.all(
           [
             ["image", current.blob],
+            ["thumb", current.thumbnail],
             ["before", before.blob],
             ["after", after.blob],
           ].map(([kind, blob]) =>

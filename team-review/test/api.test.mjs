@@ -35,6 +35,11 @@ function fixture() {
       };
     },
     async batch(statements) {
+      if (DB.beforeBatch) {
+        const hook = DB.beforeBatch;
+        DB.beforeBatch = null;
+        hook();
+      }
       sqlite.exec("BEGIN");
       try {
         const results = [];
@@ -92,7 +97,7 @@ function fixture() {
       cookie: response.headers.get("set-cookie")?.split(";")[0],
     };
   }
-  return { call, sqlite, objects, background };
+  return { call, sqlite, objects, background, DB };
 }
 async function owner(f) {
   const r = await f.call("/api/owner/session", {
@@ -171,6 +176,7 @@ test("anonymous visitors cannot read clips, model, media, reviews, export or wor
     "/api/admin/model",
     "/api/admin/export",
     "/media/" + source.id + "-0/image",
+    "/media/" + source.id + "-0/thumb",
   ]) {
     assert.equal((await f.call(path)).response.status, 401, path);
   }
@@ -421,4 +427,241 @@ test("wrong PIN attempts are throttled and revoked access loses its session", as
       body: { code: "not-a-code" },
     });
   assert.equal(response.response.status, 429);
+});
+
+async function assigned(f, member) {
+  return (
+    await (
+      await f.call("/api/work", { method: "POST", cookie: member.cookie })
+    ).data()
+  ).batch.frames;
+}
+function runRequest(frames, reason = "outside_frame") {
+  return {
+    reason,
+    frames: frames.map((frame) => ({
+      id: frame.id,
+      version: frame.version,
+      operationId: crypto.randomUUID(),
+    })),
+  };
+}
+const putRun = (f, member, data) =>
+  f.call("/api/labels/bulk", {
+    method: "PUT",
+    cookie: member.cookie,
+    body: data,
+  });
+
+test("a 20-frame absence run saves once, retains AI proposals, and releases the next batch", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  await clip(f, admin);
+  const member = await reviewer(f, admin, "Alex");
+  const frames = await assigned(f, member);
+  const request = runRequest(frames);
+  const result = await putRun(f, member, request);
+  assert.equal(
+    result.response.status,
+    200,
+    JSON.stringify(await result.data()),
+  );
+  assert.equal(
+    f.sqlite
+      .prepare(
+        "SELECT COUNT(*) AS n FROM frames WHERE state='done' AND version=1",
+      )
+      .get().n,
+    20,
+  );
+  assert.equal(
+    f.sqlite.prepare("SELECT COUNT(*) AS n FROM revisions").get().n,
+    20,
+  );
+  const labels = f.sqlite
+    .prepare("SELECT answer FROM labels")
+    .all()
+    .map((r) => JSON.parse(r.answer));
+  assert.ok(
+    labels.every(
+      (a) =>
+        a.status === "not_visible" &&
+        a.reason === "outside_frame" &&
+        a.bbox === null,
+    ),
+  );
+  assert.equal(
+    f.sqlite
+      .prepare(
+        "SELECT COUNT(*) AS n FROM frames WHERE state='done' AND proposal!='null'",
+      )
+      .get().n,
+    20,
+  );
+  assert.equal((await putRun(f, member, request)).response.status, 200);
+  assert.equal(
+    f.sqlite.prepare("SELECT COUNT(*) AS n FROM revisions").get().n,
+    20,
+  );
+  assert.equal(
+    (await putRun(f, member, { ...request, reason: "unknown" })).response
+      .status,
+    409,
+  );
+  const next = await assigned(f, member);
+  assert.equal(next.length, 20);
+  assert.ok(next.every((n) => frames.every((old) => old.id !== n.id)));
+});
+
+test("bulk marking preserves reviewed balls and refuses stale versions or another reviewer’s frames", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  await clip(f, admin);
+  const a = await reviewer(f, admin, "Alex"),
+    b = await reviewer(f, admin, "Bea");
+  const aa = await assigned(f, a),
+    bb = await assigned(f, b);
+  assert.equal(
+    (await putRun(f, a, runRequest([aa[0], bb[0]]))).response.status,
+    409,
+  );
+  assert.equal(
+    (await putRun(f, a, runRequest([{ ...aa[0], version: 99 }, aa[1]])))
+      .response.status,
+    409,
+  );
+  await f.call("/api/labels/" + aa[0].id, {
+    method: "PUT",
+    cookie: a.cookie,
+    body: {
+      version: 0,
+      operationId: crypto.randomUUID(),
+      answer: { status: "visible", bbox: [100, 100, 8, 8] },
+    },
+  });
+  assert.equal(
+    (await putRun(f, a, runRequest(aa.slice(0, 2)))).response.status,
+    409,
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM labels").get().n, 1);
+  assert.deepEqual(
+    JSON.parse(f.sqlite.prepare("SELECT answer FROM labels").get().answer).bbox,
+    [100, 100, 8, 8],
+  );
+});
+
+test("a reassignment between preview and commit cancels the entire absence run", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  await clip(f, admin, 3);
+  const a = await reviewer(f, admin, "Alex");
+  const frames = await assigned(f, a);
+  f.DB.beforeBatch = () =>
+    f.sqlite
+      .prepare(
+        "UPDATE frames SET assignee=NULL,state='pending',version=version+1 WHERE id=?",
+      )
+      .run(frames[1].id);
+  assert.equal((await putRun(f, a, runRequest(frames))).response.status, 409);
+  assert.equal(
+    f.sqlite
+      .prepare("SELECT COUNT(*) AS n FROM frames WHERE state='done'")
+      .get().n,
+    0,
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM labels").get().n, 0);
+  assert.equal(
+    f.sqlite.prepare("SELECT COUNT(*) AS n FROM revisions").get().n,
+    0,
+  );
+});
+
+test("bulk unknown and hidden answers stay out of training negatives", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  await clip(f, admin, 6);
+  const a = await reviewer(f, admin, "Alex"),
+    frames = await assigned(f, a);
+  for (const [start, reason] of [
+    [0, "unknown"],
+    [2, "hidden"],
+    [4, "outside_frame"],
+  ])
+    assert.equal(
+      (await putRun(f, a, runRequest(frames.slice(start, start + 2), reason)))
+        .response.status,
+      200,
+    );
+  const result = await f.call("/api/admin/export", { cookie: admin });
+  const zip = unzipSync(new Uint8Array(await result.response.arrayBuffer()));
+  const coco = JSON.parse(strFromU8(zip["annotations.json"]));
+  const reviews = JSON.parse(strFromU8(zip["reviews.json"]));
+  assert.equal(coco.images.length, 2);
+  assert.equal(coco.annotations.length, 0);
+  assert.equal(reviews.length, 6);
+  await Promise.all(f.background);
+});
+
+test("bulk requests enforce sign-in, size, clip boundaries and valid reasons", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  assert.equal(
+    (
+      await f.call("/api/labels/bulk", {
+        method: "PUT",
+        body: { reason: "unknown", frames: [] },
+      })
+    ).response.status,
+    401,
+  );
+  await clip(f, admin, 1);
+  await clip(f, admin, 2);
+  const a = await reviewer(f, admin, "Alex"),
+    frames = await assigned(f, a);
+  assert.equal(frames.length, 3);
+  assert.equal((await putRun(f, a, runRequest(frames))).response.status, 400);
+  assert.equal(
+    (await putRun(f, a, runRequest([frames[0], frames[0]]))).response.status,
+    400,
+  );
+  assert.equal(
+    (
+      await putRun(f, a, {
+        reason: "not sure",
+        frames: runRequest([frames[0]]).frames,
+      })
+    ).response.status,
+    400,
+  );
+  assert.equal(
+    (await putRun(f, a, runRequest(new Array(21).fill(frames[0])))).response
+      .status,
+    400,
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM labels").get().n, 0);
+});
+
+test("thumbnails retain assignment protection and older clips fall back to their original image", async () => {
+  const f = fixture(),
+    admin = await owner(f);
+  const source = await clip(f, admin, 1);
+  const a = await reviewer(f, admin, "Alex"),
+    b = await reviewer(f, admin, "Bea");
+  const frame = (await assigned(f, a))[0];
+  assert.ok(frame.thumbnail.endsWith("/thumb"));
+  const fallback = await f.call(frame.thumbnail, { cookie: a.cookie });
+  assert.equal(fallback.response.status, 200);
+  assert.deepEqual(
+    new Uint8Array(await fallback.response.arrayBuffer()),
+    new Uint8Array([255, 216, 0, 255, 217]),
+  );
+  const small = new Uint8Array([255, 216, 1, 255, 217]);
+  f.objects.set("clips/" + source.id + "/0/thumb.jpg", { bytes: small });
+  const thumb = await f.call(frame.thumbnail, { cookie: a.cookie });
+  assert.deepEqual(new Uint8Array(await thumb.response.arrayBuffer()), small);
+  assert.equal(
+    (await f.call(frame.thumbnail, { cookie: b.cookie })).response.status,
+    403,
+  );
+  assert.equal((await f.call(frame.thumbnail)).response.status, 401);
 });

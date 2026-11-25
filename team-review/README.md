@@ -56,3 +56,11 @@ Never commit `.dev.vars`, model binaries, session cookies, reviewer codes, organ
 ## Current limits
 
 This phase annotates the match ball. It does not yet train a model, infer reliable passes/possession, track identities, or label pitch lines and teams. Browser imports require a desktop browser and an open tab; mobile is optimised for human review. Sampling reduces annotation volume and is not continuous tracking ground truth. For a tracking model, also collect dense sequences with occlusions and reappearances. The organiser comparison view shows the latest 200 labels; the export includes the entire saved dataset.
+
+## Fast absence labels
+
+**Outside & next** saves a confirmed outside-frame example and advances with one tap. **Can't tell & next** saves uncertainty and advances. Choose the latter when you lost the ball but cannot tell where it went.
+
+For longer gaps, use **Mark several frames**, tap the last thumbnail to include (or **Select all shown**), choose Outside frame, Hidden or Can't tell, then **Mark N frames**. The range is limited to this clip and up to 20 assigned frames. Saved reviews are kept. The group is saved atomically, so a stale or reassigned frame prevents the entire group from being changed. Retry requests reuse operation IDs. Only confirmed outside-frame answers become training negatives.
+
+New imports include private 320-pixel thumbnails for the range grid. Original images remain at source resolution for drawing and training. Older clips fall back to their existing original image.
