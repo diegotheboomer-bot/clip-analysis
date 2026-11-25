@@ -10,8 +10,7 @@ preserved, including the 640 × 360 GOAL.mp4 export.
 Share the GitHub Pages address. Each person can optionally enter their name under
 Results. They pinch with two fingers to zoom, move both fingers to pan, then drag one
 finger from one corner of the ball to the opposite corner to draw its box.
-Dragging again replaces the box. They choose visibility and save. A tap opens
-the magnified view, which also supports pinch zoom and box drawing.
+Dragging again replaces the box. They choose visibility and save. Use Remove box to clear a selection. A tap alone leaves the frame unmarked.
 
 Before and After display context only. All coordinates belong to This frame.
 A partial ball's box encloses the visible pixels, including blur. Hidden balls

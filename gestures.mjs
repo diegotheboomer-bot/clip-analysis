@@ -29,10 +29,12 @@ export function zoomView(view, anchor, position, factor, image) {
   );
 }
 
-// One pointer draws a box. Two pointers zoom/pan and cancel the unfinished box.
-// After a pinch, all fingers must lift before another drawing can begin.
+// Native touch events handle phones and embedded mobile browsers. Pointer
+// events handle mouse and pen. Both feed the same source-coordinate gesture.
 export function bindImageGestures(canvas, options) {
-  const pointers = new Map();
+  const points = new Map();
+  const captured = new Set();
+  const nativeTouch = "ontouchstart" in window;
   let mode = null,
     start = null,
     pinch = null;
@@ -46,57 +48,50 @@ export function bindImageGestures(canvas, options) {
   }
 
   function pair() {
-    const [a, b] = [...pointers.values()];
+    const [a, b] = [...points.values()];
     return {
       midpoint: relative({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }),
       distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
     };
   }
 
-  function clear() {
-    const ids = [...pointers.keys()];
-    const wasActive = mode !== null;
-    mode = start = pinch = null;
-    pointers.clear();
-    options.preview(null);
-    for (const id of ids) {
-      if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
-    }
-    if (wasActive) options.active(false);
+  function release(id) {
+    captured.delete(id);
+    if (canvas.hasPointerCapture(id)) canvas.releasePointerCapture(id);
   }
 
-  canvas.addEventListener("pointerdown", (event) => {
-    if (
-      !options.enabled() ||
-      (event.pointerType === "mouse" && event.button !== 0)
-    )
-      return;
-    event.preventDefault();
-    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    canvas.setPointerCapture(event.pointerId);
-    if (pointers.size === 1) {
+  function clear() {
+    const active = mode !== null;
+    mode = start = pinch = null;
+    points.clear();
+    options.preview(null);
+    for (const id of [...captured]) release(id);
+    if (active) options.active(false);
+  }
+
+  function begin(id, point) {
+    points.set(id, point);
+    if (points.size === 1) {
       const view = [...options.getView()];
       mode = "draw";
       start = {
-        client: [event.clientX, event.clientY],
-        point: pointInView(relative(pointers.get(event.pointerId)), view),
+        client: point,
+        point: pointInView(relative(point), view),
         view,
         moved: false,
       };
       options.active(true);
-    } else if (pointers.size === 2 && mode !== "wait") {
+    } else if (points.size === 2 && mode !== "wait") {
       const { midpoint, distance } = pair();
       const view = [...options.getView()];
       pinch = { view, distance, anchor: pointInView(midpoint, view) };
       mode = "pinch";
       options.preview(null);
     }
-  });
+  }
 
-  function move(event) {
-    if (!pointers.has(event.pointerId)) return;
-    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-    if (mode === "pinch" && pointers.size >= 2) {
+  function move() {
+    if (mode === "pinch" && points.size >= 2) {
       const { midpoint, distance } = pair();
       options.setView(
         zoomView(
@@ -108,44 +103,109 @@ export function bindImageGestures(canvas, options) {
         ),
       );
     } else if (mode === "draw") {
+      const point = points.values().next().value;
       start.moved ||=
-        Math.hypot(
-          event.clientX - start.client[0],
-          event.clientY - start.client[1],
-        ) >= 3;
-      if (start.moved) {
+        Math.hypot(point.x - start.client.x, point.y - start.client.y) >= 2;
+      if (start.moved)
         options.preview([
           start.point,
-          pointInView(relative(pointers.get(event.pointerId)), start.view),
+          pointInView(relative(point), start.view),
         ]);
-      }
     }
   }
-  canvas.addEventListener("pointermove", move);
 
-  canvas.addEventListener("pointerup", (event) => {
-    if (!pointers.has(event.pointerId)) return;
-    move(event);
+  function end(id) {
+    if (!points.has(id)) return;
     const drawing = mode === "draw" ? start : null;
-    const end = drawing
-      ? pointInView(relative(pointers.get(event.pointerId)), drawing.view)
+    const last = drawing
+      ? pointInView(relative(points.get(id)), drawing.view)
       : null;
-    pointers.delete(event.pointerId);
-    mode = pointers.size ? "wait" : null;
+    points.delete(id);
+    mode = points.size ? "wait" : null;
     start = pinch = null;
     options.preview(null);
-    if (canvas.hasPointerCapture(event.pointerId))
-      canvas.releasePointerCapture(event.pointerId);
-    if (!pointers.size) options.active(false);
-    if (drawing && options.enabled()) {
-      if (drawing.moved) options.commit(drawing.point, end);
-      else options.tap(...end);
-    }
-  });
+    if (!points.size) options.active(false);
+    if (drawing?.moved && options.enabled())
+      options.commit(drawing.point, last);
+  }
 
-  canvas.addEventListener("pointercancel", clear);
+  if (nativeTouch) {
+    canvas.addEventListener(
+      "touchstart",
+      (event) => {
+        if (!options.enabled()) return;
+        event.preventDefault();
+        for (const touch of event.changedTouches) {
+          begin("touch-" + touch.identifier, {
+            x: touch.clientX,
+            y: touch.clientY,
+          });
+        }
+      },
+      { passive: false },
+    );
+    canvas.addEventListener(
+      "touchmove",
+      (event) => {
+        if (!points.size) return;
+        event.preventDefault();
+        for (const touch of event.touches) {
+          const id = "touch-" + touch.identifier;
+          if (points.has(id))
+            points.set(id, { x: touch.clientX, y: touch.clientY });
+        }
+        move();
+      },
+      { passive: false },
+    );
+    canvas.addEventListener(
+      "touchend",
+      (event) => {
+        if (!points.size) return;
+        event.preventDefault();
+        for (const touch of event.changedTouches) {
+          const id = "touch-" + touch.identifier;
+          if (points.has(id))
+            points.set(id, { x: touch.clientX, y: touch.clientY });
+        }
+        move();
+        for (const touch of event.changedTouches)
+          end("touch-" + touch.identifier);
+      },
+      { passive: false },
+    );
+    canvas.addEventListener("touchcancel", clear);
+  }
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (
+      (nativeTouch && event.pointerType === "touch") ||
+      !options.enabled() ||
+      (event.pointerType === "mouse" && event.button !== 0)
+    )
+      return;
+    event.preventDefault();
+    canvas.setPointerCapture(event.pointerId);
+    captured.add(event.pointerId);
+    begin(event.pointerId, { x: event.clientX, y: event.clientY });
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!points.has(event.pointerId)) return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    move();
+  });
+  canvas.addEventListener("pointerup", (event) => {
+    if (!points.has(event.pointerId)) return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    move();
+    end(event.pointerId);
+    release(event.pointerId);
+  });
+  canvas.addEventListener("pointercancel", (event) => {
+    if (points.has(event.pointerId)) clear();
+  });
   canvas.addEventListener("lostpointercapture", (event) => {
-    if (pointers.has(event.pointerId)) clear();
+    if (points.has(event.pointerId)) clear();
   });
   canvas.addEventListener(
     "wheel",

@@ -7,12 +7,12 @@ import {
   validateSubmission,
   collectOptions,
   toCoco,
-} from "./core.mjs";
+} from "./core.mjs?v=3";
 
-import { bindImageGestures } from "./gestures.mjs";
+import { bindImageGestures } from "./gestures.mjs?v=3";
 
 const $ = (id) => document.getElementById(id);
-const elements = { overview: $("overview"), focus: $("focus") };
+const elements = { overview: $("overview") };
 const imageCache = new Map();
 const cancelGestures = [];
 let overviewView,
@@ -25,9 +25,7 @@ let batch,
   draft,
   image,
   context = "image";
-let focusCenter,
-  focusWidth,
-  frameReady = false,
+let frameReady = false,
   loadingToken = 0;
 let storageOK = true,
   drawPending = false;
@@ -86,10 +84,6 @@ function imageAt(path) {
 }
 
 function syncButtons() {
-  $("workspace").classList.toggle(
-    "has-focus",
-    Boolean(focusCenter && needsBox(draft.status) && context === "image"),
-  );
   document.querySelectorAll("[data-status]").forEach((button) => {
     button.setAttribute(
       "aria-pressed",
@@ -105,12 +99,6 @@ function syncButtons() {
   $("absence-reasons").hidden = draft.status !== "not_visible";
   $("edge-option").hidden = !needsBox(draft.status);
   $("edge-clipped").checked = draft.edgeClipped;
-  $("focus-panel").hidden = !focusCenter || !needsBox(draft.status);
-  $("box-controls").hidden = !draft.bbox;
-  if (draft.bbox) {
-    $("width-value").textContent = draft.bbox[2] + " px";
-    $("height-value").textContent = draft.bbox[3] + " px";
-  }
   const help = {
     visible: draft.bbox
       ? "Check the outline, then save. Drag again to replace the box."
@@ -135,12 +123,9 @@ function syncButtons() {
     currentIndex === batch.frames.length - 1
       ? "Save & finish "
       : "Save & next ";
-  $("refine-box").hidden =
-    !draft.bbox || Boolean(focusCenter) || context !== "image";
+  $("remove-box").disabled = !draft.bbox || gesturing || context !== "image";
   $("zoom-level").textContent =
     (frame().width / overviewView[2]).toFixed(1) + "×";
-  $("zoom-in").disabled = focusWidth <= 24;
-  $("zoom-out").disabled = focusWidth >= frame().width;
 }
 
 function updateProgress() {
@@ -169,7 +154,7 @@ function paintCanvas(canvas, source, sourceCrop, box) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  ctx.imageSmoothingEnabled = canvas !== elements.focus;
+  ctx.imageSmoothingEnabled = overviewView[2] >= frame().width / 3;
   const [sx, sy, sw, sh] = sourceCrop;
   ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
   if (!box || context !== "image") return;
@@ -184,15 +169,6 @@ function paintCanvas(canvas, source, sourceCrop, box) {
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#d2ff78";
   ctx.strokeRect(px, py, pw, ph);
-  const cx = px + pw / 2,
-    cy = py + ph / 2;
-  ctx.fillStyle = "#d2ff78";
-  // A small centre dot leaves the ball itself visible in the magnified view.
-  if (canvas === elements.overview) {
-    ctx.beginPath();
-    ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
 }
 
 function draw() {
@@ -200,24 +176,6 @@ function draw() {
   if (!image || !frameReady) return;
   const box = previewBox || draft.bbox;
   paintCanvas(elements.overview, image, overviewView, box);
-  if (!focusCenter || $("focus-panel").hidden) return;
-  paintCanvas(elements.focus, image, focusView(), box);
-}
-
-function focusView() {
-  const rect = elements.focus.getBoundingClientRect();
-  const f = frame();
-  const width = Math.min(f.width, focusWidth);
-  const height = Math.min(
-    f.height,
-    (width * rect.height) / Math.max(1, rect.width),
-  );
-  return [
-    Math.max(0, Math.min(f.width - width, focusCenter[0] - width / 2)),
-    Math.max(0, Math.min(f.height - height, focusCenter[1] - height / 2)),
-    width,
-    height,
-  ];
 }
 
 function scheduleDraw() {
@@ -235,8 +193,6 @@ async function showContext(which) {
   $("image-feedback").hidden = false;
   $("image-feedback").textContent = "Loading frame…";
   syncButtons();
-  $("focus-panel").hidden =
-    which !== "image" || !focusCenter || !needsBox(draft.status);
   for (const [id, value] of [
     ["before-button", "before"],
     ["current-button", "image"],
@@ -258,7 +214,6 @@ async function showContext(which) {
     $("image-feedback").textContent =
       which === "before" ? "Before · context only" : "After · context only";
     syncButtons();
-    if (which !== "image") $("focus-panel").hidden = true;
     scheduleDraw();
   } catch (err) {
     if (token !== loadingToken) return;
@@ -275,8 +230,6 @@ function go(index) {
   draft = structuredClone(
     state.drafts[f.id] || state.answers[f.id] || initialDraft(),
   );
-  focusCenter = draft.bbox ? centerOf(draft.bbox) : null;
-  focusWidth = Math.min(120, f.width);
   $("frame-label").textContent = f.source;
   $("time-label").textContent = f.timestampSec.toFixed(2) + " s";
   elements.overview.style.aspectRatio = f.width + " / " + f.height;
@@ -300,12 +253,11 @@ function changed() {
   scheduleDraw();
 }
 
-function place(x, y, precise) {
-  if (!frameReady || context !== "image") return;
-  if (!needsBox(draft.status)) draft.status = "visible";
-  const box = draft.bbox;
-  draft.bbox = fitBox([x, y], box?.[2] || 8, box?.[3] || 8, frame());
-  if (!precise) focusCenter = [x, y];
+function removeBox() {
+  if (!draft.bbox || gesturing || context !== "image") return;
+  draft.bbox = null;
+  draft.edgeClipped = false;
+  previewBox = null;
   changed();
 }
 
@@ -546,43 +498,33 @@ function draggedBox(a, b) {
 }
 
 function bindEvents() {
-  for (const canvas of [elements.overview, elements.focus]) {
-    const overview = canvas === elements.overview;
-    cancelGestures.push(
-      bindImageGestures(canvas, {
-        enabled: () =>
-          frameReady && context === "image" && !$("workspace").hidden,
-        image: frame,
-        getView: () => (overview ? overviewView : focusView()),
-        setView: (view) => {
-          if (overview) {
-            overviewView = view;
-            $("zoom-level").textContent =
-              (frame().width / view[2]).toFixed(1) + "×";
-          } else {
-            focusCenter = centerOf(view);
-            focusWidth = view[2];
-          }
-          scheduleDraw();
-        },
-        active: (active) => {
-          gesturing = active;
-          syncButtons();
-        },
-        preview: (points) => {
-          previewBox = points ? draggedBox(...points) : null;
-          scheduleDraw();
-        },
-        commit: (a, b) => {
-          if (!needsBox(draft.status)) draft.status = "visible";
-          draft.bbox = draggedBox(a, b);
-          if (overview) focusCenter = null;
-          changed();
-        },
-        tap: (x, y) => place(x, y, !overview),
-      }),
-    );
-  }
+  cancelGestures.push(
+    bindImageGestures(elements.overview, {
+      enabled: () =>
+        frameReady && context === "image" && !$("workspace").hidden,
+      image: frame,
+      getView: () => overviewView,
+      setView: (view) => {
+        overviewView = view;
+        $("zoom-level").textContent =
+          (frame().width / view[2]).toFixed(1) + "×";
+        scheduleDraw();
+      },
+      active: (active) => {
+        gesturing = active;
+        syncButtons();
+      },
+      preview: (points) => {
+        previewBox = points ? draggedBox(...points) : null;
+        scheduleDraw();
+      },
+      commit: (a, b) => {
+        if (!needsBox(draft.status)) draft.status = "visible";
+        draft.bbox = draggedBox(a, b);
+        changed();
+      },
+    }),
+  );
   document.querySelectorAll("[data-status]").forEach(
     (button) =>
       (button.onclick = () => {
@@ -607,50 +549,12 @@ function bindEvents() {
     draft.edgeClipped = event.target.checked;
     changed();
   };
-  for (const dimension of ["width", "height"]) {
-    for (const [suffix, delta] of [
-      ["minus", -1],
-      ["plus", 1],
-    ]) {
-      $(dimension + "-" + suffix).onclick = () => {
-        if (!draft.bbox) return;
-        const [, , w, h] = draft.bbox;
-        draft.bbox = fitBox(
-          centerOf(draft.bbox),
-          dimension === "width" ? w + delta : w,
-          dimension === "height" ? h + delta : h,
-          frame(),
-        );
-        changed();
-      };
-    }
-  }
   $("reset-view").onclick = () => {
     overviewView = [0, 0, frame().width, frame().height];
     syncButtons();
     scheduleDraw();
   };
-  $("refine-box").onclick = () => {
-    focusCenter = centerOf(draft.bbox);
-    focusWidth = Math.min(120, frame().width);
-    syncButtons();
-    scheduleDraw();
-  };
-  $("choose-area").onclick = () => {
-    focusCenter = null;
-    syncButtons();
-    scheduleDraw();
-  };
-  $("zoom-in").onclick = () => {
-    focusWidth = Math.max(24, focusWidth / 1.5);
-    syncButtons();
-    scheduleDraw();
-  };
-  $("zoom-out").onclick = () => {
-    focusWidth = Math.min(frame().width, focusWidth * 1.5);
-    syncButtons();
-    scheduleDraw();
-  };
+  $("remove-box").onclick = removeBox;
   for (const [id, which] of [
     ["before-button", "before"],
     ["current-button", "image"],
@@ -723,6 +627,9 @@ function bindEvents() {
           '[data-status="' + statuses[Number(event.key) - 1] + '"]',
         )
         .click();
+    } else if (["Delete", "Backspace"].includes(event.key)) {
+      event.preventDefault();
+      removeBox();
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (!$("save-next-button").disabled) saveNext();
