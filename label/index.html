@@ -8,7 +8,7 @@
     />
     <meta name="theme-color" content="#101715" />
     <title>PitchCam · Ball labelling</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=2" />
   </head>
   <body>
     <header class="header">
@@ -44,12 +44,19 @@
             <button id="choose-area" class="quiet">
               ← Choose another area
             </button>
+            <div class="view-tools">
+              <span id="zoom-level" class="mono">1.0×</span
+              ><button id="reset-view" class="quiet">Reset view</button
+              ><button id="refine-box" class="quiet" hidden>
+                Magnify selection
+              </button>
+            </div>
             <div class="image-stage" id="image-stage">
               <canvas
                 id="overview"
                 tabindex="0"
                 role="img"
-                aria-label="Match frame. Tap near the ball to open the magnified view."
+                aria-label="Match frame. Pinch with two fingers to zoom and pan. Drag one finger to draw a ball box."
               ></canvas>
               <span id="image-feedback" role="status">Loading frame…</span>
             </div>
@@ -70,11 +77,12 @@
               </div>
             </div>
             <p class="hint" id="overview-hint">
-              Tap near the ball. A magnified view opens below.
+              Pinch to zoom and move with two fingers. Drag a box around the
+              ball with one finger.
             </p>
             <div id="focus-panel" hidden>
               <div class="focus-heading">
-                <strong>Tap the exact centre here</strong>
+                <strong>Drag a box around the ball</strong>
                 <div>
                   <button
                     id="zoom-out"
@@ -95,7 +103,7 @@
                 id="focus"
                 tabindex="0"
                 role="img"
-                aria-label="Magnified view. Tap the centre of the ball."
+                aria-label="Magnified view. Pinch to zoom and pan. Drag a box around the ball."
               ></canvas>
               <div id="box-controls">
                 <div class="dimension">
@@ -265,12 +273,15 @@
       >
         ×
       </button>
-      <h2>A few taps per frame</h2>
+      <h2>Zoom, outline, save</h2>
       <ol>
-        <li>Tap near the match ball in the large picture.</li>
         <li>
-          Tap its exact centre in the magnified view. Use + and − to fit the
-          outline.
+          Pinch with two fingers to zoom into the match ball. Move both fingers
+          together to pan.
+        </li>
+        <li>
+          Drag one finger from one corner of the ball to the opposite corner to
+          draw a box. Drag again to replace it.
         </li>
         <li>Choose Visible or Partly covered, then Save & next.</li>
       </ol>
@@ -284,11 +295,12 @@
         reason. Use Unsure for a blob you can't identify.
       </p>
       <p>
-        On a computer, use 1–4 for visibility, Enter to save and arrows to nudge
-        the marked centre. Hold Shift to nudge five pixels.
+        On a computer, use Ctrl + mouse wheel to zoom. Use 1–4 for visibility,
+        Enter to save and arrows to nudge the marked centre. Hold Shift to nudge
+        five pixels.
       </p>
       <button id="start-review" class="primary">Got it</button>
     </dialog>
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=2"></script>
   </body>
 </html>

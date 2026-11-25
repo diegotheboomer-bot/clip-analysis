@@ -9,17 +9,22 @@ import {
   toCoco,
 } from "./core.mjs";
 
+import { bindImageGestures } from "./gestures.mjs";
+
 const $ = (id) => document.getElementById(id);
 const elements = { overview: $("overview"), focus: $("focus") };
 const imageCache = new Map();
+const cancelGestures = [];
+let overviewView,
+  previewBox = null,
+  gesturing = false;
 let batch,
   storageKey,
   state,
   currentIndex = 0,
   draft,
   image,
-  context = "image",
-  crop;
+  context = "image";
 let focusCenter,
   focusWidth,
   frameReady = false,
@@ -108,8 +113,8 @@ function syncButtons() {
   }
   const help = {
     visible: draft.bbox
-      ? "Check the outline, then save. Tap the magnified picture to adjust the centre."
-      : "Tap the ball in the picture to place an outline.",
+      ? "Check the outline, then save. Drag again to replace the box."
+      : "Drag a box around the ball. Pinch with two fingers to zoom.",
     partial:
       "Outline the visible part of the ball. Use Not visible if it is completely hidden.",
     not_visible: "Choose a reason. A completely hidden ball has no box.",
@@ -123,12 +128,17 @@ function syncButtons() {
     validateAnswer(draft, frame());
     valid = true;
   } catch {}
-  $("save-next-button").disabled = !valid || !frameReady || context !== "image";
+  $("save-next-button").disabled =
+    !valid || !frameReady || context !== "image" || gesturing;
   $("previous-button").disabled = currentIndex === 0;
   $("save-next-button").firstChild.textContent =
     currentIndex === batch.frames.length - 1
       ? "Save & finish "
       : "Save & next ";
+  $("refine-box").hidden =
+    !draft.bbox || Boolean(focusCenter) || context !== "image";
+  $("zoom-level").textContent =
+    (frame().width / overviewView[2]).toFixed(1) + "×";
   $("zoom-in").disabled = focusWidth <= 24;
   $("zoom-out").disabled = focusWidth >= frame().width;
 }
@@ -152,10 +162,13 @@ function paintCanvas(canvas, source, sourceCrop, box) {
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   const width = Math.max(1, rect.width),
     height = Math.max(1, rect.height);
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
+  const pixelWidth = Math.round(width * ratio);
+  const pixelHeight = Math.round(height * ratio);
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
   const ctx = canvas.getContext("2d");
-  ctx.scale(ratio, ratio);
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
   ctx.imageSmoothingEnabled = canvas !== elements.focus;
   const [sx, sy, sw, sh] = sourceCrop;
   ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
@@ -185,22 +198,26 @@ function paintCanvas(canvas, source, sourceCrop, box) {
 function draw() {
   drawPending = false;
   if (!image || !frameReady) return;
-  const f = frame();
-  paintCanvas(elements.overview, image, [0, 0, f.width, f.height], draft.bbox);
+  const box = previewBox || draft.bbox;
+  paintCanvas(elements.overview, image, overviewView, box);
   if (!focusCenter || $("focus-panel").hidden) return;
+  paintCanvas(elements.focus, image, focusView(), box);
+}
+
+function focusView() {
   const rect = elements.focus.getBoundingClientRect();
+  const f = frame();
   const width = Math.min(f.width, focusWidth);
   const height = Math.min(
     f.height,
     (width * rect.height) / Math.max(1, rect.width),
   );
-  crop = [
+  return [
     Math.max(0, Math.min(f.width - width, focusCenter[0] - width / 2)),
     Math.max(0, Math.min(f.height - height, focusCenter[1] - height / 2)),
     width,
     height,
   ];
-  paintCanvas(elements.focus, image, crop, draft.bbox);
 }
 
 function scheduleDraw() {
@@ -211,6 +228,7 @@ function scheduleDraw() {
 }
 
 async function showContext(which) {
+  cancelGestures.forEach((cancel) => cancel());
   context = which;
   const token = ++loadingToken;
   frameReady = false;
@@ -229,7 +247,7 @@ async function showContext(which) {
   }
   $("overview-hint").textContent =
     which === "image"
-      ? "Tap near the ball. A magnified view opens below."
+      ? "Pinch to zoom and move with two fingers. Drag a box around the ball with one finger."
       : "Context only. Return to This frame to place your label.";
   try {
     const img = await imageAt(frame()[which]);
@@ -249,9 +267,11 @@ async function showContext(which) {
 }
 
 function go(index) {
+  cancelGestures.forEach((cancel) => cancel());
   if (index < 0 || index >= batch.frames.length) return;
   currentIndex = index;
   const f = frame();
+  overviewView = [0, 0, f.width, f.height];
   draft = structuredClone(
     state.drafts[f.id] || state.answers[f.id] || initialDraft(),
   );
@@ -287,32 +307,6 @@ function place(x, y, precise) {
   draft.bbox = fitBox([x, y], box?.[2] || 8, box?.[3] || 8, frame());
   if (!precise) focusCenter = [x, y];
   changed();
-}
-
-function tapOn(canvas, fn) {
-  let start = null;
-  canvas.addEventListener("pointerdown", (event) => {
-    if (event.isPrimary === false) return;
-    start = { x: event.clientX, y: event.clientY };
-  });
-  canvas.addEventListener("pointercancel", () => {
-    start = null;
-  });
-  canvas.addEventListener("pointerup", (event) => {
-    if (
-      !start ||
-      Math.hypot(event.clientX - start.x, event.clientY - start.y) > 9
-    ) {
-      start = null;
-      return;
-    }
-    start = null;
-    const rect = canvas.getBoundingClientRect();
-    fn(
-      (event.clientX - rect.left) / rect.width,
-      (event.clientY - rect.top) / rect.height,
-    );
-  });
 }
 
 function saveNext() {
@@ -535,13 +529,60 @@ async function importResults(files) {
   $("import-files").value = "";
 }
 
-function bindEvents() {
-  tapOn(elements.overview, (x, y) =>
-    place(x * frame().width, y * frame().height, false),
+function draggedBox(a, b) {
+  const f = frame();
+  const clamp = (point) => [
+    Math.max(0, Math.min(f.width, point[0])),
+    Math.max(0, Math.min(f.height, point[1])),
+  ];
+  const start = clamp(a),
+    end = clamp(b);
+  return fitBox(
+    [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2],
+    Math.abs(end[0] - start[0]),
+    Math.abs(end[1] - start[1]),
+    f,
   );
-  tapOn(elements.focus, (x, y) => {
-    if (crop) place(crop[0] + x * crop[2], crop[1] + y * crop[3], true);
-  });
+}
+
+function bindEvents() {
+  for (const canvas of [elements.overview, elements.focus]) {
+    const overview = canvas === elements.overview;
+    cancelGestures.push(
+      bindImageGestures(canvas, {
+        enabled: () =>
+          frameReady && context === "image" && !$("workspace").hidden,
+        image: frame,
+        getView: () => (overview ? overviewView : focusView()),
+        setView: (view) => {
+          if (overview) {
+            overviewView = view;
+            $("zoom-level").textContent =
+              (frame().width / view[2]).toFixed(1) + "×";
+          } else {
+            focusCenter = centerOf(view);
+            focusWidth = view[2];
+          }
+          scheduleDraw();
+        },
+        active: (active) => {
+          gesturing = active;
+          syncButtons();
+        },
+        preview: (points) => {
+          previewBox = points ? draggedBox(...points) : null;
+          scheduleDraw();
+        },
+        commit: (a, b) => {
+          if (!needsBox(draft.status)) draft.status = "visible";
+          draft.bbox = draggedBox(a, b);
+          if (overview) focusCenter = null;
+          changed();
+        },
+        tap: (x, y) => place(x, y, !overview),
+      }),
+    );
+  }
   document.querySelectorAll("[data-status]").forEach(
     (button) =>
       (button.onclick = () => {
@@ -584,6 +625,17 @@ function bindEvents() {
       };
     }
   }
+  $("reset-view").onclick = () => {
+    overviewView = [0, 0, frame().width, frame().height];
+    syncButtons();
+    scheduleDraw();
+  };
+  $("refine-box").onclick = () => {
+    focusCenter = centerOf(draft.bbox);
+    focusWidth = Math.min(120, frame().width);
+    syncButtons();
+    scheduleDraw();
+  };
   $("choose-area").onclick = () => {
     focusCenter = null;
     syncButtons();
@@ -653,7 +705,10 @@ function bindEvents() {
     state.helpSeen = true;
     persist();
   });
-  window.addEventListener("resize", scheduleDraw);
+  window.addEventListener("resize", () => {
+    cancelGestures.forEach((cancel) => cancel());
+    scheduleDraw();
+  });
   document.addEventListener("keydown", (event) => {
     if (
       event.target.matches("input,textarea,select") ||
