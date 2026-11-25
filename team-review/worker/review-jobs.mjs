@@ -77,7 +77,12 @@ export async function reviewJobsRoute(request,env,ctx,user,h) {
     let answer;try{answer=canonicalAnswer(j.kind,d.answer,item,d.completed);}catch(e){fail(400,e.message);}
     const serial=JSON.stringify(answer),prior=await first(env,'SELECT * FROM review_changes WHERE operation_id=?',d.operationId);
     if(prior){if(prior.item_id!==item.id||prior.answer!==serial||prior.completed!==Number(d.completed))fail(409,'This save identifier was already used.');return json({saved:true,version:item.version,status:item.status});}
-    if(item.status==='done'&&user.role!=='owner')fail(409,'This frame is completed. Ask the organiser if it needs reopening.');
+    if(item.status==='done'&&user.role!=='owner'){
+      if(d.undo!==true||d.completed)fail(409,'This frame is completed. Use Undo for your last submission.');
+      const latest=await first(env,`SELECT rc.item_id FROM review_changes rc JOIN review_items ri ON ri.id=rc.item_id WHERE ri.job_id=? AND ri.status='done' AND rc.completed=1 ORDER BY rc.created_at DESC,rc.rowid DESC LIMIT 1`,j.id);
+      if(latest?.item_id!==item.id)fail(409,'Only the most recent submission can be undone.');
+      if(await first(env,`SELECT ri.id FROM review_items ri JOIN review_jobs child ON child.id=ri.job_id WHERE child.depends_on=? AND ri.status!='pending' LIMIT 1`,j.id))fail(409,'Pitch review has already started. Ask the organiser to change the earlier ball label.');
+    }
     const result=await env.DB.batch([
       stmt(env,`UPDATE review_items SET answer=?,status=?,version=version+1,last_operation=?,updated_at=? WHERE id=? AND version=? AND (EXISTS(SELECT 1 FROM review_jobs j JOIN members m ON m.id=j.member_id WHERE j.id=review_items.job_id AND j.member_id=? AND m.active=1) OR ?=1)`,serial,d.completed?'done':'draft',d.operationId,now(),item.id,d.version,user.member_id,user.role==='owner'?1:0),
       stmt(env,'INSERT INTO review_changes(operation_id,item_id,reviewer_id,answer,completed,created_at) SELECT ?,id,?,?,?,? FROM review_items WHERE id=? AND last_operation=?',d.operationId,user.member_id,serial,Number(d.completed),now(),item.id,d.operationId),

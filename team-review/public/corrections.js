@@ -3,7 +3,8 @@ import { normaliseResults, initialCorrection, reviewQueue, trainingAnnotations, 
 import { VideoReader } from './video-reader.mjs';
 import { makePitchLine, lineHit, movePitchLine, editableLines } from './pitch-lines.mjs';
 import { RemoteReview } from './review-remote.mjs';
-let remoteReview=null;
+let remoteReview=null,lastSubmitted=null;
+const simpleBall=()=>remoteReview?.job.kind==='ball';
 const $=id=>document.getElementById(id), canvas=$('canvas'), ctx=canvas.getContext('2d'), still=document.createElement('canvas'), picture=still.getContext('2d');
 let frames=[], corrections={}, trackTeams={}, fingerprint='', jsonName='', videoName='', queue=[], index=0, layer='pitch', selected=null, mode='line', busy=false, ready=false, zoom=1, pan=[0,0], space=false, undo=[], db, reader=new VideoReader({endPaddingSec:0.001}), gesture=null;
 const pointers=new Map();
@@ -22,9 +23,9 @@ function layout(){const f=frame();if(!f)return;const r=canvas.getBoundingClientR
 function point(e){const t=layout();return [(e.clientX-t.r.left-t.x)/t.s,(e.clientY-t.r.top-t.y)/t.s];}
 function clamp(p){const f=frame();return [Math.max(0,Math.min(f.width,p[0])),Math.max(0,Math.min(f.height,p[1]))];}
 function selectedPitchLine(){return typeof selected==='string'&&selected.startsWith('line:')?correction().lines.find(l=>l.id===selected.slice(5)):null;}
-function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=correction(),t=layout();ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,t.r.width,t.r.height);ctx.translate(t.x,t.y);ctx.scale(t.s,t.s);ctx.drawImage(still,0,0,f.width,f.height);ctx.globalAlpha=Number($('opacity').value);ctx.lineWidth=1.4/t.s;ctx.font=`${12/t.s}px system-ui`;
- function box(b,color,label,sel=false){ctx.strokeStyle=color;ctx.fillStyle=color;ctx.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);if(label)ctx.fillText(label,b[0],Math.max(13/t.s,b[1]-4/t.s));if(sel)for(const p of [[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]])ctx.fillRect(p[0]-4/t.s,p[1]-4/t.s,8/t.s,8/t.s);}
- if(layer==='ball'){f.candidates.forEach((p,i)=>box(p.bbox,'#e5aa63',String(i+1)));if(c.ball.bbox)box(c.ball.bbox,'#cfff75',c.ball.reviewed?'Reviewed':'Correction',selected==='ball');}
+function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=correction(),t=layout();ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,t.r.width,t.r.height);ctx.translate(t.x,t.y);ctx.scale(t.s,t.s);ctx.drawImage(still,0,0,f.width,f.height);ctx.globalAlpha=simpleBall()?1:Number($('opacity').value);ctx.lineWidth=1.4/t.s;ctx.font=`${12/t.s}px system-ui`;
+ function box(b,color,label,sel=false){if(simpleBall()){ctx.strokeStyle='#031006';ctx.lineWidth=4/t.s;ctx.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);ctx.lineWidth=2/t.s;}ctx.strokeStyle=color;ctx.fillStyle=color;ctx.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);if(label)ctx.fillText(label,b[0],Math.max(13/t.s,b[1]-4/t.s));if(sel)for(const p of [[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]])ctx.fillRect(p[0]-4/t.s,p[1]-4/t.s,8/t.s,8/t.s);}
+ if(layer==='ball'){if(!simpleBall())f.candidates.forEach((p,i)=>box(p.bbox,'#e5aa63',String(i+1)));if(c.ball.bbox)box(c.ball.bbox,'#cfff75',simpleBall()?'':c.ball.reviewed?'Reviewed':'Correction',!simpleBall()&&selected==='ball');}
  if(layer==='players')c.players.forEach(p=>{const team=p.team_manual?p.team:(trackTeams[String(p.track_id)]||p.team);box(p.bbox,team==='A'?'#67b9ff':team==='B'?'#ffe76b':'#b4bdb7',`${p.role==='referee'?'Ref':team==='unknown'?'?':team}${p.track_id!==null?' #'+p.track_id:''}`,p.id===selected);});
  if(layer==='pitch'){for(const line of c.lines)drawPitchLine(line,line.id===selectedPitchLine()?.id);if(gesture?.lineDraw)drawPitchLine({start:gesture.start,end:gesture.end,visibility:$('pitch-line-visibility').value},true);}
  if(layer==='pitch')c.landmarks.forEach((p,i)=>{if(p.visibility!=='visible')return;ctx.fillStyle=i===selected?'#ffbb70':'#cfff75';ctx.beginPath();ctx.arc(...p.xy,(i===selected?6:4)/t.s,0,Math.PI*2);ctx.fill();ctx.fillText(p.label,p.xy[0]+7/t.s,p.xy[1]-7/t.s);});
@@ -41,7 +42,7 @@ function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=corre
 }
 
 function options(node,items,value){node.replaceChildren(...[['','Select…'],...items].map(([v,label])=>{const o=document.createElement('option');o.value=v;o.textContent=label;return o;}));node.value=value!==null&&value!==undefined?String(value):'';}
-function controls(){if(!queue.length)return;const f=frame(),c=correction();$('position').textContent=remoteReview?`${remoteReview.job.kind==='ball'?'Ball':'Pitch lines'} · ${index+1} / ${queue.length} · ${f.source}`:`${index+1} / ${queue.length} · ${f.time.toFixed(3)} s · source frame ${f.originalFrameId ?? f.id}`;$('timeline').max=queue.length-1;$('timeline').value=index;
+function controls(){if(!queue.length)return;const f=frame(),c=correction();$('position').textContent=remoteReview?`${remoteReview.job.kind==='ball'?'Ball':'Pitch lines'} · ${index+1} / ${queue.length} · ${f.source}`:`${index+1} / ${queue.length} · ${f.time.toFixed(3)} s · source frame ${f.originalFrameId ?? f.id}`;if(simpleBall())$('position').textContent=`Ball · ${index+1} / ${queue.length}`;$('timeline').max=queue.length-1;$('timeline').value=index;
  for(const id of ['ball','player','pitch'])$(id+'-tools').hidden=(id==='player'?'players':id)!==layer;
  document.querySelectorAll('[data-layer]').forEach(b=>b.classList.toggle('active',b.dataset.layer===layer));
  $('layer-help').textContent=layer==='ball'?'Tap a candidate or draw a tight box around the visible ball.':layer==='players'?'Select a player. Correct the box, team or role. Check all people before confirming.':'Drag to draw a straight line. Move the line or either endpoint.';
@@ -51,7 +52,7 @@ function controls(){if(!queue.length)return;const f=frame(),c=correction();$('po
  const p=c.players.find(p=>p.id===selected);$('team').value=p?(p.team_manual?p.team:(trackTeams[String(p.track_id)]||p.team)):'unknown';$('role').value=p?.role||'unknown';$('apply-track').disabled=!p||p.track_id===null;
  options($('landmark-list'),c.landmarks.map((p,i)=>[i,`${p.label} · ${p.visibility}`]),typeof selected==='number'?selected:null);
  const landmark=typeof selected==='number'?c.landmarks[selected]:null;if(landmark){$('landmark-label').value=landmark.label;$('landmark-visibility').value=landmark.visibility;}
- const reviewed=layer==='ball'?c.ball.reviewed:c[layer==='players'?'playersReviewed':'pitchReviewed'];$('review-state').textContent=reviewed?'Reviewed on this frame':'Needs review';$('confirm').textContent='Correct & next';$('confirm').disabled=!ready||Boolean(remoteReview?.readOnly(f.id));$('absence-end').min=f.time;$('absence-end').placeholder=(f.time+1).toFixed(1);
+ const reviewed=layer==='ball'?c.ball.reviewed:c[layer==='players'?'playersReviewed':'pitchReviewed'];$('review-state').textContent=reviewed?'Reviewed on this frame':'Needs review';$('confirm').textContent=simpleBall()?'Submit & next':'Correct & next';if(simpleBall())mode='draw';$('confirm').disabled=!ready||Boolean(remoteReview?.readOnly(f.id));$('absence-end').min=f.time;$('absence-end').placeholder=(f.time+1).toFixed(1);
  $('draw-mode').textContent=layer==='pitch'?'Draw line':mode==='draw'?'Drawing…':'Draw box';$('draw-mode').disabled=false;
  $('draw-mode').classList.toggle('active',mode==='draw'||mode==='line');$('select-mode').classList.toggle('active',mode==='select');$('stage').classList.toggle('drawing',mode==='draw'||mode==='line'||mode==='point');
  const activeLine=selectedPitchLine();
@@ -76,7 +77,7 @@ $('player-list').onchange=()=>{selected=$('player-list').value;controls();paint(
 $('apply-track').onclick=()=>change(c=>{const p=c.players.find(p=>p.id===selected);if(p&&p.track_id!==null){trackTeams[String(p.track_id)]=$('team').value;p.team_manual=false;}});
 $('landmark-list').onchange=()=>{selected=$('landmark-list').value===''?null:Number($('landmark-list').value);controls();paint();};$('add-landmark').onclick=()=>{if(!$('new-landmark-label').value.trim())return message('Enter the landmark label, then tap its visible location.');mode='point';message('Tap the visible landmark in the image.');};$('landmark-visibility').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].visibility=$('landmark-visibility').value;});$('landmark-label').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].label=$('landmark-label').value.trim()||c.landmarks[selected].label;});
 $('remove').onclick=()=>change(c=>{if(layer==='ball'){c.ball.bbox=null;c.ball.status='unsure';}else if(layer==='players')c.players=c.players.filter(p=>p.id!==selected);else if(selectedPitchLine())c.lines=c.lines.filter(l=>l.id!==selectedPitchLine().id);else if(typeof selected==='number')c.landmarks.splice(selected,1);selected=null;});
-$('undo').onclick=()=>{if(!ready||!undo.length||remoteReview?.readOnly(frame().id))return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
+$('undo').onclick=()=>{if(simpleBall()&&!undo.length&&lastSubmitted&&!busy)return undoSubmitted();if(!ready||!undo.length||remoteReview?.readOnly(frame().id))return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
 $('confirm').onclick=async()=>{if(!ready)return;if(remoteReview)return confirmRemote();try{const c=correction();snapshot();if(layer==='ball')c.ball.reviewed=true;else c[layer==='players'?'playersReviewed':'pitchReviewed']=true;validateCorrection(c,frame());save();controls();if(index<queue.length-1)go(index+1);else message('Reached the last frame in this queue. Download your corrections.');}catch(e){const u=undo.pop();if(u)corrections[u.id]=u.value;message(e.message);}};
 $('bulk-absence').onclick=()=>{if(!ready)return;const start=frame().time,end=Number($('absence-end').value),reason=$('ball-reason').value;if(!$('absence-end').value||!Number.isFinite(end)||end<start||end>reader.video.duration)return message('Enter an end time between this frame and the end of the video.');const targets=frames.filter(f=>f.time>=start&&f.time<=end);if(!confirm(`Mark ${targets.length} frames from ${start.toFixed(2)} to ${end.toFixed(2)} s as not visible (${reason})? This replaces their current ball labels.`))return;undo.push({group:targets.map(f=>({id:f.id,value:structuredClone(corrections[f.id]||initialCorrection(f))})),teams:{...trackTeams}});for(const f of targets){const c=corrections[f.id] ||= initialCorrection(f);c.ball={status:'not_visible',bbox:null,reason,reviewed:true};}save();controls();paint();message(`Saved ${targets.length} unseen-ball labels.`);};
 $('export').onclick=()=>download(JSON.stringify({...stored(),sourceFrames:frames}),'pitchcam-corrections.json');$('match').onchange=save;
@@ -121,22 +122,22 @@ async function confirmRemote(){
  try{
   if(layer==='ball')c.ball.reviewed=true;else c.pitchReviewed=true;
   validateCorrection(c,f);busy=true;ready=false;$('confirm').disabled=true;$('saved').textContent='Saving to site…';
-  await remoteReview.confirm(f.id,c);$('saved').textContent='Saved to site';busy=false;ready=true;
+  await remoteReview.confirm(f.id,c);lastSubmitted=f.id;$('saved').textContent='Saved to site';busy=false;ready=true;
   const remaining=queue.map((id,i)=>({id,i})).filter(q=>!remoteReview.readOnly(q.id));
   if(!remaining.length){showRemoteCompletion();return;}
   const next=remaining.find(q=>q.i>index)||remaining[0];await go(next.i);
  }catch(e){if(layer==='ball')c.ball.reviewed=false;else c.pitchReviewed=false;busy=false;ready=true;message(e.message+' Your batch is not marked completed.');$('saved').textContent='Save failed — retry before leaving';controls();}
 }
 function showRemoteCompletion(){
- $('work').hidden=true;$('setup').hidden=true;const section=document.createElement('section');section.className='card';
+ $('work').hidden=true;$('setup').hidden=true;const section=document.createElement('section');section.id='review-completed';section.className='card';
  const heading=document.createElement('h1');heading.textContent=remoteReview.job.title+' completed';const p=document.createElement('p');p.textContent=remoteReview.items.length+' / '+remoteReview.items.length+' completed. Everything is saved to the site. No files to send back.';
- const a=document.createElement('a');a.className='primary button-link';a.href='/?batches=1';a.textContent='Back to my batches';section.append(heading,p,a);document.querySelector('main').append(section);message('');
+ const a=document.createElement('a');a.className='primary button-link';a.href='/?batches=1';a.textContent='Back to my batches';section.append(heading,p,a);if(simpleBall()&&lastSubmitted){const back=document.createElement('button');back.textContent='Undo last submission';back.onclick=undoSubmitted;section.append(back);}document.querySelector('main').append(section);message('');
 }
 async function openRemoteJob(jobId){
  try{
   $('setup').hidden=true;message('Opening your assigned batch…');remoteReview=await RemoteReview.open(jobId);
   frames=remoteReview.frames;corrections=remoteReview.corrections;trackTeams={};fingerprint='job-'+jobId;queue=frames.map(f=>f.id);index=0;
-  layer=remoteReview.job.kind==='ball'?'ball':'pitch';mode=layer==='pitch'?'line':'select';
+  layer=remoteReview.job.kind==='ball'?'ball':'pitch';mode=layer==='pitch'?'line':'draw';if(simpleBall())setupSimpleBall();
   remoteReview.onSaved=()=>{$('saved').textContent='Saved to site';};remoteReview.onError=e=>{message(e.message);$('saved').textContent='Save failed — retry before leaving';};
   document.querySelectorAll('[data-layer]').forEach(b=>b.hidden=b.dataset.layer!==layer);document.querySelector('.tabs').style.gridTemplateColumns='1fr';
   for(const id of ['change-files','export','training','restore','spacing','focus']){const n=$(id);n.hidden=true;if(n.closest('label'))n.closest('label').hidden=true;}
@@ -146,3 +147,13 @@ async function openRemoteJob(jobId){
  }catch(e){message(e.message);const link=document.createElement('a');link.href='/?batches=1';link.textContent='Back to your batches / sign in';document.querySelector('main').append(link);}
 }
 const remoteId=new URL(location.href).searchParams.get('job');if(remoteId)openRemoteJob(remoteId);
+
+function setupSimpleBall(){
+ document.body.classList.add('simple-ball');const bar=document.createElement('div');bar.className='simple-actions';const unseen=document.createElement('button');unseen.id='simple-unseen';unseen.textContent="Can't see ball";
+ unseen.onclick=async()=>{if(!ready||busy)return;change(c=>{c.ball={status:'not_visible',reason:'unknown',bbox:null,reviewed:false};});await confirmRemote();};
+ bar.append($('undo'),unseen,$('confirm'));$('stage').after(bar);$('saved').textContent='Saves to the site';
+}
+async function undoSubmitted(){
+ if(!lastSubmitted||busy)return;const id=lastSubmitted;busy=true;
+ try{await remoteReview.undoSubmission(id);corrections[id].ball.reviewed=false;lastSubmitted=null;document.getElementById('review-completed')?.remove();$('work').hidden=false;busy=false;await go(queue.indexOf(id));message('Last submission undone. Drag a new box or submit again.');}catch(e){busy=false;message(e.message);}
+}

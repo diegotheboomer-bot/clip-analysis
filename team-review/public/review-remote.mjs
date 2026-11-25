@@ -9,5 +9,6 @@ export class RemoteReview {
     this.pending=this.pending.catch(()=>{}).then(async()=>{const result=await api(`/api/review-jobs/${this.job.id}/items/${id}`,{version:item.version,operationId:crypto.randomUUID(),completed,answer});item.version=result.version;item.status=result.status;item.answer=answer;this.onSaved?.(completed);return result;});return this.pending;
   }
   async confirm(id,c){clearTimeout(this.timer);this.draft=null;await this.pending.catch(()=>{});return this.enqueue(id,c,true);}
+  async undoSubmission(id){await this.flush();const item=this.itemsById.get(id);const result=await api(`/api/review-jobs/${this.job.id}/items/${id}`,{version:item.version,operationId:crypto.randomUUID(),completed:false,undo:true,answer:item.answer});item.version=result.version;item.status=result.status;return result;}
   async image(frame){return new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=()=>reject(Error('Could not load this assigned image. Retry this frame.'));im.src=frame.image;});}
 }
