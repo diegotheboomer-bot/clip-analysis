@@ -3,7 +3,9 @@ import { normaliseResults, initialCorrection, reviewQueue, trainingAnnotations, 
 import { VideoReader } from './video-reader.mjs';
 import { makePitchLine, lineHit, movePitchLine, editableLines } from './pitch-lines.mjs';
 import { RemoteReview } from './review-remote.mjs';
-let remoteReview=null,lastSubmitted=null;
+import { fittedSize } from './image-cache.mjs';
+let remoteReview=null,lastSubmitted=null,showingEarlier=false,referenceBusy=false,referenceToken=0;
+const earlierCanvas=document.createElement('canvas');
 const simpleBall=()=>remoteReview?.job.kind==='ball';
 const $=id=>document.getElementById(id), canvas=$('canvas'), ctx=canvas.getContext('2d'), still=document.createElement('canvas'), picture=still.getContext('2d');
 let frames=[], corrections={}, trackTeams={}, fingerprint='', jsonName='', videoName='', queue=[], index=0, layer='pitch', selected=null, mode='line', busy=false, ready=false, zoom=1, pan=[0,0], space=false, undo=[], db, reader=new VideoReader({endPaddingSec:0.001}), gesture=null;
@@ -17,13 +19,13 @@ async function save(){if(remoteReview){if(remoteReview.readOnly(frame().id))retu
 async function restoreLocal(){try{const d=await database();return await new Promise((resolve,reject)=>{const r=d.transaction('sessions').objectStore('sessions').get(fingerprint);r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}catch{return null;}}
 function snapshot(){undo.push({id:frame().id,value:structuredClone(correction()),teams:{...trackTeams}});if(undo.length>30)undo.shift();}
 function dirty(){const c=correction();if(layer==='ball')c.ball.reviewed=false;else c[layer==='players'?'playersReviewed':'pitchReviewed']=false;save();controls();paint();}
-function change(fn){if(!ready)return;if(remoteReview?.readOnly(frame().id))return message('This frame is completed and saved.');snapshot();fn(correction());dirty();}
+function change(fn){if(!ready||showingEarlier||referenceBusy)return;if(remoteReview?.readOnly(frame().id))return message('This frame is completed and saved.');snapshot();fn(correction());dirty();}
 function download(data,name,type='application/json'){const url=URL.createObjectURL(new Blob([data],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 function layout(){const f=frame();if(!f)return;const r=canvas.getBoundingClientRect();const cw=Math.max(1,Math.round(r.width*devicePixelRatio)),ch=Math.max(1,Math.round(r.height*devicePixelRatio));if(canvas.width!==cw)canvas.width=cw;if(canvas.height!==ch)canvas.height=ch;const fit=Math.min(r.width/f.width,r.height/f.height);return {r,s:fit*zoom,x:(r.width-f.width*fit*zoom)/2+pan[0],y:(r.height-f.height*fit*zoom)/2+pan[1]};}
 function point(e){const t=layout();return [(e.clientX-t.r.left-t.x)/t.s,(e.clientY-t.r.top-t.y)/t.s];}
 function clamp(p){const f=frame();return [Math.max(0,Math.min(f.width,p[0])),Math.max(0,Math.min(f.height,p[1]))];}
 function selectedPitchLine(){return typeof selected==='string'&&selected.startsWith('line:')?correction().lines.find(l=>l.id===selected.slice(5)):null;}
-function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=correction(),t=layout();ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,t.r.width,t.r.height);ctx.translate(t.x,t.y);ctx.scale(t.s,t.s);ctx.drawImage(still,0,0,f.width,f.height);ctx.globalAlpha=simpleBall()?1:Number($('opacity').value);ctx.lineWidth=1.4/t.s;ctx.font=`${12/t.s}px system-ui`;
+function paint(){if(!frames.length||!queue.length)return;const f=frame(),c=correction(),t=layout();ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);ctx.clearRect(0,0,t.r.width,t.r.height);ctx.translate(t.x,t.y);ctx.scale(t.s,t.s);ctx.drawImage(showingEarlier?earlierCanvas:still,0,0,f.width,f.height);if(showingEarlier)return;ctx.globalAlpha=simpleBall()?1:Number($('opacity').value);ctx.lineWidth=1.4/t.s;ctx.font=`${12/t.s}px system-ui`;
  function box(b,color,label,sel=false){if(simpleBall()){ctx.strokeStyle='#031006';ctx.lineWidth=4/t.s;ctx.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);ctx.lineWidth=2/t.s;}ctx.strokeStyle=color;ctx.fillStyle=color;ctx.strokeRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);if(label)ctx.fillText(label,b[0],Math.max(13/t.s,b[1]-4/t.s));if(sel)for(const p of [[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]])ctx.fillRect(p[0]-4/t.s,p[1]-4/t.s,8/t.s,8/t.s);}
  if(layer==='ball'){if(!simpleBall())f.candidates.forEach((p,i)=>box(p.bbox,'#e5aa63',String(i+1)));if(c.ball.bbox)box(c.ball.bbox,'#cfff75',simpleBall()?'':c.ball.reviewed?'Reviewed':'Correction',!simpleBall()&&selected==='ball');}
  if(layer==='players')c.players.forEach(p=>{const team=p.team_manual?p.team:(trackTeams[String(p.track_id)]||p.team);box(p.bbox,team==='A'?'#67b9ff':team==='B'?'#ffe76b':'#b4bdb7',`${p.role==='referee'?'Ref':team==='unknown'?'?':team}${p.track_id!==null?' #'+p.track_id:''}`,p.id===selected);});
@@ -61,7 +63,7 @@ function controls(){if(!queue.length)return;const f=frame(),c=correction();$('po
  $('line-evidence').textContent=$('pitch-line-visibility').value==='inferred'?'Assumed lines are dashed and saved outside training labels.':'Draw a separate Assumed line for any hidden continuation.';
 
 }
-async function go(n){if(busy||!queue.length)return;busy=true;ready=false;$('confirm').disabled=true;const next=Math.max(0,Math.min(queue.length-1,n)),f=frames.find(f=>f.id===queue[next]);message(remoteReview?'Loading assigned frame…':'Decoding frame…');try{if(remoteReview)await remoteReview.flush();const image=remoteReview?await remoteReview.image(f):(await reader.seek(f.time),reader.video);still.width=f.width;still.height=f.height;picture.drawImage(image,0,0,f.width,f.height);if(remoteReview)undo=[];index=next;selected=null;gesture=null;ready=true;message('');controls();paint();}catch(e){message(e.message+' Select another frame to retry.');}finally{busy=false;}}
+async function go(n){if(busy||!queue.length)return;busy=true;ready=false;showingEarlier=false;referenceBusy=false;referenceToken++;if($('earlier-view'))$('earlier-view').textContent='Earlier';if($('simple-unseen'))$('simple-unseen').disabled=false;$('confirm').disabled=true;const next=Math.max(0,Math.min(queue.length-1,n)),f=frames.find(f=>f.id===queue[next]);message(remoteReview?'Loading assigned frame…':'Decoding frame…');try{if(remoteReview)await remoteReview.flush();const image=remoteReview?await remoteReview.image(f):(await reader.seek(f.time),reader.video);still.width=f.width;still.height=f.height;picture.drawImage(image,0,0,f.width,f.height);if(remoteReview)undo=[];index=next;fitStage();selected=null;gesture=null;ready=true;message('');controls();paint();if(remoteReview)remoteReview.preload(index);}catch(e){message(e.message+' Select another frame to retry.');}finally{busy=false;}}
 function rebuild(){const id=queue[index],nextQueue=reviewQueue(frames,Number($('spacing').value),$('focus').value);if(!nextQueue.length){$('focus').value='all';message('No uncertain frames found. Keeping the current queue.');return;}queue=nextQueue;go(Math.max(0,queue.indexOf(id)));}
 async function open(){if(busy)return;const j=$('json').files[0],v=$('video-file').files[0];if(!j||!v)return message('Choose both the results JSON and its original video.');busy=true;ready=false;$('work').hidden=true;message('Opening files locally…');try{if(j.size>120*1024*1024)throw Error('Use a JSON export smaller than 120 MB.');const text=await j.text();let raw;try{raw=JSON.parse(text);}catch{raw=text.trim().split(/\r?\n/).map(l=>JSON.parse(l));}const parsed=normaliseResults(raw),meta=await reader.open(v);if(parsed.at(-1).time>meta.duration+.15)throw Error('This video is shorter than the exported timeline. Choose the matching original clip.');if(parsed.some(f=>Math.abs(f.width/f.height-meta.width/meta.height)>.03))throw Error('The video shape does not match the JSON. Choose the same original video export.');frames=parsed;jsonName=j.name;videoName=v.name;const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));fingerprint=Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('');const local=await restoreLocal();corrections=local?.corrections||{};trackTeams=local?.trackTeams||{};$('match').value=local?.match||'';undo=[];queue=reviewQueue(frames,1);index=0;zoom=1;pan=[0,0];$('spacing').value='1';$('focus').value='all';$('source-info').textContent=`${frames.length} exported frames · ${parsed.at(-1).time.toFixed(2)} seconds · ${v.name}. ${local?'Previous corrections restored.':''}`;$('work').hidden=false;$('setup').hidden=true;$('change-files').hidden=false;busy=false;await go(0);}catch(e){message(e.message);busy=false;}}
 function nextOpen(){const key=layer==='ball'?'ball':layer==='players'?'playersReviewed':'pitchReviewed';for(let n=1;n<=queue.length;n++){const i=(index+n)%queue.length,c=corrections[queue[i]],done=key==='ball'?c?.ball.reviewed:c?.[key];if(!done)return go(i);}message('Every frame in this queue is reviewed for this layer.');}
@@ -77,7 +79,7 @@ $('player-list').onchange=()=>{selected=$('player-list').value;controls();paint(
 $('apply-track').onclick=()=>change(c=>{const p=c.players.find(p=>p.id===selected);if(p&&p.track_id!==null){trackTeams[String(p.track_id)]=$('team').value;p.team_manual=false;}});
 $('landmark-list').onchange=()=>{selected=$('landmark-list').value===''?null:Number($('landmark-list').value);controls();paint();};$('add-landmark').onclick=()=>{if(!$('new-landmark-label').value.trim())return message('Enter the landmark label, then tap its visible location.');mode='point';message('Tap the visible landmark in the image.');};$('landmark-visibility').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].visibility=$('landmark-visibility').value;});$('landmark-label').onchange=()=>change(c=>{if(typeof selected==='number'&&c.landmarks[selected])c.landmarks[selected].label=$('landmark-label').value.trim()||c.landmarks[selected].label;});
 $('remove').onclick=()=>change(c=>{if(layer==='ball'){c.ball.bbox=null;c.ball.status='unsure';}else if(layer==='players')c.players=c.players.filter(p=>p.id!==selected);else if(selectedPitchLine())c.lines=c.lines.filter(l=>l.id!==selectedPitchLine().id);else if(typeof selected==='number')c.landmarks.splice(selected,1);selected=null;});
-$('undo').onclick=()=>{if(simpleBall()&&!undo.length&&lastSubmitted&&!busy)return undoSubmitted();if(!ready||!undo.length||remoteReview?.readOnly(frame().id))return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
+$('undo').onclick=()=>{if(showingEarlier||referenceBusy)return;if(simpleBall()&&!undo.length&&lastSubmitted&&!busy)return undoSubmitted();if(!ready||!undo.length||remoteReview?.readOnly(frame().id))return;const u=undo.pop();if(u.group){for(const item of u.group)corrections[item.id]=item.value;}else corrections[u.id]=u.value;trackTeams=u.teams;selected=null;save();controls();paint();};
 $('confirm').onclick=async()=>{if(!ready)return;if(remoteReview)return confirmRemote();try{const c=correction();snapshot();if(layer==='ball')c.ball.reviewed=true;else c[layer==='players'?'playersReviewed':'pitchReviewed']=true;validateCorrection(c,frame());save();controls();if(index<queue.length-1)go(index+1);else message('Reached the last frame in this queue. Download your corrections.');}catch(e){const u=undo.pop();if(u)corrections[u.id]=u.value;message(e.message);}};
 $('bulk-absence').onclick=()=>{if(!ready)return;const start=frame().time,end=Number($('absence-end').value),reason=$('ball-reason').value;if(!$('absence-end').value||!Number.isFinite(end)||end<start||end>reader.video.duration)return message('Enter an end time between this frame and the end of the video.');const targets=frames.filter(f=>f.time>=start&&f.time<=end);if(!confirm(`Mark ${targets.length} frames from ${start.toFixed(2)} to ${end.toFixed(2)} s as not visible (${reason})? This replaces their current ball labels.`))return;undo.push({group:targets.map(f=>({id:f.id,value:structuredClone(corrections[f.id]||initialCorrection(f))})),teams:{...trackTeams}});for(const f of targets){const c=corrections[f.id] ||= initialCorrection(f);c.ball={status:'not_visible',bbox:null,reason,reviewed:true};}save();controls();paint();message(`Saved ${targets.length} unseen-ball labels.`);};
 $('export').onclick=()=>download(JSON.stringify({...stored(),sourceFrames:frames}),'pitchcam-corrections.json');$('match').onchange=save;
@@ -85,7 +87,7 @@ $('restore').onchange=async()=>{try{const r=JSON.parse(await $('restore').files[
 function zoomAt(factor,cx,cy){const t=layout(),x=(cx-t.x)/t.s,y=(cy-t.y)/t.s;zoom=Math.max(1,Math.min(12,zoom*factor));const n=layout();pan[0]+=cx-(n.x+x*n.s);pan[1]+=cy-(n.y+y*n.s);paint();}
 $('zoom-in').onclick=()=>{if(ready){const t=layout();zoomAt(1.5,t.r.width/2,t.r.height/2);}};$('zoom-out').onclick=()=>{if(ready){const t=layout();zoomAt(1/1.5,t.r.width/2,t.r.height/2);}};$('fit').onclick=()=>{zoom=1;pan=[0,0];paint();};
 canvas.addEventListener('wheel',e=>{if(!ready)return;e.preventDefault();const t=layout();zoomAt(e.deltaY<0?1.15:1/1.15,e.clientX-t.r.left,e.clientY-t.r.top);},{passive:false});
-canvas.onpointerdown=e=>{if(!ready)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===2){if(gesture?.backup){corrections[frame().id]=gesture.backup;if(gesture.edit||gesture.landmark||gesture.lineEdit)undo.pop();}gesture={pinch:true};paint();return;}const p=clamp(point(e)),c=correction(),t=layout();
+canvas.onpointerdown=e=>{if(!ready||showingEarlier||referenceBusy)return;e.preventDefault();canvas.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===2){if(gesture?.backup){corrections[frame().id]=gesture.backup;if(gesture.edit||gesture.landmark||gesture.lineEdit)undo.pop();}gesture={pinch:true};paint();return;}const p=clamp(point(e)),c=correction(),t=layout();
  if(space||e.button===1){gesture={pan:true,last:[e.clientX,e.clientY]};return;}
  if(remoteReview?.readOnly(frame().id))return;
  if(mode==='point'&&layer==='pitch'){change(c=>{c.landmarks.push({label:$('new-landmark-label').value.trim(),xy:p,visibility:'visible'});selected=c.landmarks.length-1;});mode='select';message('');return;}
@@ -118,6 +120,7 @@ $('training').onclick=async()=>{if(!ready||busy)return;if(!$('match').value.trim
 }
 
 async function confirmRemote(){
+ if(showingEarlier||referenceBusy)return message('Return to Current to submit your annotation.');
  const f=frame(),c=correction();if(remoteReview.readOnly(f.id))return;
  try{
   if(layer==='ball')c.ball.reviewed=true;else c.pitchReviewed=true;
@@ -150,10 +153,26 @@ const remoteId=new URL(location.href).searchParams.get('job');if(remoteId)openRe
 
 function setupSimpleBall(){
  document.body.classList.add('simple-ball');const bar=document.createElement('div');bar.className='simple-actions';const unseen=document.createElement('button');unseen.id='simple-unseen';unseen.textContent="Can't see ball";
- unseen.onclick=async()=>{if(!ready||busy)return;change(c=>{c.ball={status:'not_visible',reason:'unknown',bbox:null,reviewed:false};});await confirmRemote();};
- bar.append($('undo'),unseen,$('confirm'));$('stage').after(bar);$('saved').textContent='Saves to the site';
+ unseen.onclick=async()=>{if(!ready||busy||showingEarlier||referenceBusy)return;change(c=>{c.ball={status:'not_visible',reason:'unknown',bbox:null,reviewed:false};});await confirmRemote();};
+ bar.append($('undo'),unseen,$('confirm'));$('stage').after(bar);const view=document.createElement('button');view.id='earlier-view';view.className='earlier-view';view.textContent='Earlier';view.onclick=toggleEarlier;$('stage').append(view);$('saved').textContent='Saves to the site';
 }
 async function undoSubmitted(){
  if(!lastSubmitted||busy)return;const id=lastSubmitted;busy=true;
  try{await remoteReview.undoSubmission(id);corrections[id].ball.reviewed=false;lastSubmitted=null;document.getElementById('review-completed')?.remove();$('work').hidden=false;busy=false;await go(queue.indexOf(id));message('Last submission undone. Drag a new box or submit again.');}catch(e){busy=false;message(e.message);}
 }
+
+function fitStage(){
+ if(!queue.length)return;const f=frame(),stage=$('stage'),available=stage.parentElement.getBoundingClientRect().width;
+ const maxHeight=Math.max(120,window.innerHeight-(simpleBall()?190:240));const size=fittedSize(f.width,f.height,available,maxHeight);
+ Object.assign(stage.style,{width:size.width+'px',height:size.height+'px',minHeight:'0',maxHeight:'none',marginInline:'auto'});
+ const actions=document.querySelector('.simple-actions');if(actions)Object.assign(actions.style,{width:size.width+'px',maxWidth:'100%',marginInline:'auto'});
+}
+async function toggleEarlier(){
+ if(!ready||busy||referenceBusy)return;
+ if(showingEarlier){showingEarlier=false;$('earlier-view').textContent='Earlier';$('confirm').disabled=remoteReview.readOnly(frame().id);$('simple-unseen').disabled=false;message('');paint();return;}
+ const token=++referenceToken,source=frame();referenceBusy=true;$('earlier-view').textContent='Loading…';$('confirm').disabled=true;$('simple-unseen').disabled=true;
+ try{const im=await remoteReview.reference(source);if(token!==referenceToken)return;earlierCanvas.width=source.width;earlierCanvas.height=source.height;earlierCanvas.getContext('2d').drawImage(im,0,0,source.width,source.height);showingEarlier=true;$('earlier-view').textContent='Current';message('Earlier reference — tap Current to draw or submit.');paint();}
+ catch(e){if(token===referenceToken){$('earlier-view').textContent='Earlier';$('confirm').disabled=remoteReview.readOnly(source.id);$('simple-unseen').disabled=false;message(e.message);}}
+ finally{if(token===referenceToken)referenceBusy=false;}
+}
+window.addEventListener('resize',()=>{if(ready){fitStage();paint();}});
