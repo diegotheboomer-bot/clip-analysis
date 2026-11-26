@@ -579,7 +579,9 @@ export async function api(request, env, ctx) {
   if (path === "/api/owner/session" && method === "POST") {
     await loginLimit(request, env);
     const data = await body(request);
-    if (!equal(data.key, env.APP_SECRET)) fail(401, "Invalid organiser key.");
+    const organiserKey = env.ORGANISER_KEY ?? env.APP_SECRET;
+    if (!organiserKey || !equal(data.key, organiserKey))
+      fail(401, "Invalid organiser key.");
     return json({ role: "owner" }, 200, await issueSession(env, "owner"));
   }
   if (path === "/api/logout" && method === "POST") {

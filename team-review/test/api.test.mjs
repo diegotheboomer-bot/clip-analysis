@@ -97,7 +97,7 @@ function fixture() {
       cookie: response.headers.get("set-cookie")?.split(";")[0],
     };
   }
-  return { call, sqlite, objects, background, DB };
+  return { call, sqlite, objects, background, DB, env };
 }
 async function owner(f) {
   const r = await f.call("/api/owner/session", {
@@ -121,6 +121,24 @@ async function reviewer(f, admin, name) {
   assert.equal(signed.response.status, 200);
   return { ...member, cookie: signed.cookie };
 }
+test("changing the organiser key preserves existing reviewer codes", async () => {
+  const f = fixture();
+  const admin = await owner(f);
+  const member = await reviewer(f, admin, "Existing reviewer");
+  f.env.ORGANISER_KEY = "new-organiser-test-key";
+
+  const signIn = (key) =>
+    f.call("/api/owner/session", { method: "POST", body: { key } });
+  assert.equal((await signIn(f.env.APP_SECRET)).response.status, 401);
+  assert.equal((await signIn(f.env.ORGANISER_KEY)).response.status, 200);
+
+  const existing = await f.call("/api/login", {
+    method: "POST",
+    body: { code: member.code },
+  });
+  assert.equal(existing.response.status, 200);
+  assert.equal((await existing.data()).name, "Existing reviewer");
+});
 async function clip(f, admin, count = 42) {
   const result = await f.call("/api/admin/clips", {
     method: "POST",
