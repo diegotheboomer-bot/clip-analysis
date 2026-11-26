@@ -71,14 +71,14 @@
         </div>
         <p><a class="secondary button-link" href="/corrections.html">Review Roboflow JSON + video</a> · Correct existing predictions without another AI run.</p>
         <section class="import-card" id="review-batches">
-          <h2>Friend batches · ball first, then pitch lines</h2>
-          <p>Create separate 50-frame tasks. Answers and drafts save directly to this site.</p>
+          <h2>Review batches</h2>
           <form id="batch-form" class="form-grid">
             <label>Reviewer<select id="batch-member"><option value="">New reviewer</option></select></label>
             <label>New reviewer name<input id="batch-name" placeholder="Friend reviewer" maxlength="60"></label>
             <label>Match<select id="batch-match" required></select></label>
+            <label>Task<select id="batch-task"><option value="both">Ball, then pitch lines</option><option value="ball">Ball only</option><option value="pitch">Pitch lines only</option></select></label>
             <label>Frames per task<input id="batch-count" type="number" value="50" min="1" max="100" required></label>
-            <button class="primary">Create ball + pitch batches</button>
+            <button class="primary">Create review batch</button>
           </form>
           <div id="batch-invite" class="code-card" hidden></div>
           <p id="batch-feedback" role="status"></p>

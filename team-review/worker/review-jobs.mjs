@@ -49,21 +49,28 @@ export async function reviewJobsRoute(request,env,ctx,user,h) {
     return j;
   };
   if(path==='/api/admin/review-bundles'&&method==='POST') {
-    const d=await body(request),count=d.count??50;
+    const d=await body(request),count=d.count??50,task=d.task??'both';
     if(!Number.isInteger(count)||count<1||count>100||typeof d.matchGroup!=='string'||!d.matchGroup.trim()||!/^[-a-zA-Z0-9]{16,80}$/.test(d.requestId||''))fail(400,'Choose a match, a batch size from 1 to 100, and a request ID.');
+    if(!['ball','pitch','both'].includes(task))fail(400,'Choose ball, pitch lines, or both.');
     const existing=await rows(env,'SELECT * FROM review_jobs WHERE request_key=?',d.requestId);if(existing.length)return json({jobs:existing,memberId:existing[0].member_id,existing:true,code:null});
     const available=await rows(env,`SELECT f.*,c.created_at FROM frames f JOIN clips c ON c.id=f.clip_id WHERE c.status='ready' AND c.match_group=? ORDER BY c.created_at,CASE WHEN f.seq=0 THEN 1 ELSE 0 END,f.seq LIMIT 20000`,d.matchGroup.trim());
     const reserved=await rows(env,'SELECT frame_id,kind FROM review_items');const taken=new Set(reserved.map(r=>r.kind+':'+r.frame_id));
-    const balls=balanced(available.filter(f=>f.state==='pending'&&!f.assignee&&!taken.has('ball:'+f.id)),count);
-    const ballIds=new Set(balls.map(f=>f.id));const pitches=balanced(available.filter(f=>!ballIds.has(f.id)&&!taken.has('pitch:'+f.id)),count);
-    if(balls.length<count||pitches.length<count)fail(409,`Not enough unused imported frames for ${count} of each task. Available now: ${balls.length} ball and ${pitches.length} different pitch frames.`);
+    const balls=task==='pitch'?[]:balanced(available.filter(f=>f.state==='pending'&&!f.assignee&&!taken.has('ball:'+f.id)),count);
+    const ballIds=new Set(balls.map(f=>f.id));
+    const pitches=task==='ball'?[]:balanced(available.filter(f=>!ballIds.has(f.id)&&!taken.has('pitch:'+f.id)),count);
+    const tasks=[];
+    if(task!=='pitch')tasks.push({kind:'ball',title:'Ball',frames:balls});
+    if(task!=='ball')tasks.push({kind:'pitch',title:'Pitch lines',frames:pitches});
+    const shortage=tasks.find(t=>t.frames.length<count);
+    if(shortage)fail(409,`${shortage.title}: ${shortage.frames.length} frames available for this request. Choose a smaller batch.`);
     let member,code=null;
     if(d.memberId){member=await first(env,'SELECT * FROM members WHERE id=? AND active=1',d.memberId);if(!member)fail(400,'Choose an active reviewer.');}
     else {const created=await newCode(env,null,String(d.name||'Friend reviewer').trim().slice(0,60)||'Friend reviewer');member={id:created.id};code=created.code;}
-    const ballJob=id(),pitchJob=id(),createdAt=now();
-    const jobs=[{id:ballJob,kind:'ball',title:`Ball · ${count} frames`,depends_on:null},{id:pitchJob,kind:'pitch',title:`Pitch lines · ${count} frames`,depends_on:ballJob}];
+    const createdAt=now();
+    const jobs=tasks.map(t=>({id:id(),kind:t.kind,title:`${t.title} · ${count} frames`,depends_on:null}));
+    if(task==='both')jobs[1].depends_on=jobs[0].id;
     const inserts=jobs.map(j=>stmt(env,'INSERT INTO review_jobs(id,request_key,member_id,kind,title,depends_on,created_at) VALUES(?,?,?,?,?,?,?)',j.id,d.requestId,member.id,j.kind,j.title,j.depends_on,createdAt));
-    const items=[...balls.map((f,position)=>({id:id(),job:ballJob,frame:f.id,kind:'ball',position})),...pitches.map((f,position)=>({id:id(),job:pitchJob,frame:f.id,kind:'pitch',position}))];
+    const items=tasks.flatMap(({kind,frames},i)=>frames.map((f,position)=>({id:id(),job:jobs[i].id,frame:f.id,kind,position})));
     inserts.push(stmt(env,`INSERT INTO review_items(id,job_id,frame_id,kind,position) SELECT json_extract(value,'$.id'),json_extract(value,'$.job'),json_extract(value,'$.frame'),json_extract(value,'$.kind'),json_extract(value,'$.position') FROM json_each(?)`,JSON.stringify(items)));
     try{await env.DB.batch(inserts);}catch(e){if(code)await stmt(env,'UPDATE members SET active=0 WHERE id=?',member.id).run();fail(409,'Some frames were assigned while creating this batch. Refresh and retry.');}
     return json({memberId:member.id,code,jobs:jobs.map(j=>({...j,total:count,done:0})),url:'/?batches=1&login=1'},201);

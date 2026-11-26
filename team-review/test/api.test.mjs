@@ -666,8 +666,8 @@ test("thumbnails retain assignment protection and older clips fall back to their
   assert.equal((await f.call(frame.thumbnail)).response.status, 401);
 });
 
-async function makeBundle(f,admin,{count=2,memberId,name='Friend',requestId=crypto.randomUUID()}={}){
- const result=await f.call('/api/admin/review-bundles',{method:'POST',cookie:admin,body:{count,matchGroup:'match-1',memberId,name,requestId}});return {result,data:await result.data()};
+async function makeBundle(f,admin,{count=2,task,memberId,name='Friend',requestId=crypto.randomUUID()}={}){
+ const result=await f.call('/api/admin/review-bundles',{method:'POST',cookie:admin,body:{count,task,matchGroup:'match-1',memberId,name,requestId}});return {result,data:await result.data()};
 }
 const pitchAnswer={lines:[{id:'line-a',start:[20,30],end:[500,90],kind:'unknown',visibility:'visible'},{id:'line-b',start:[20,30],end:[650,120],kind:'unknown',visibility:'inferred'}],landmarks:[]};
 test('friend batches reserve separate frames, enforce codes and lock pitch until ball completion',async()=>{
@@ -692,6 +692,22 @@ test('repeat batch requests are idempotent and task reservations cannot overlap 
  const f=fixture(),admin=await owner(f);await clip(f,admin,12);const key=crypto.randomUUID();const a=await makeBundle(f,admin,{requestId:key});assert.equal(a.result.response.status,201);const again=await makeBundle(f,admin,{requestId:key});assert.equal(again.data.existing,true);assert.equal(again.data.jobs[0].member_id,a.data.memberId);assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM review_jobs').get().n,2);
  const b=await makeBundle(f,admin);assert.equal(b.result.response.status,201);const dup=f.sqlite.prepare('SELECT frame_id,kind,count(*) AS n FROM review_items GROUP BY frame_id,kind HAVING count(*)>1').all();assert.deepEqual(dup,[]);
  const old=await reviewer(f,admin,'Old queue');const work=await(await f.call('/api/work',{cookie:old.cookie,method:'POST'})).data();const reserved=f.sqlite.prepare("SELECT frame_id FROM review_items WHERE kind='ball'").all().map(r=>r.frame_id);assert.ok(work.batch.frames.every(x=>!reserved.includes(x.id)));
+});
+test('single-task batches can use all eligible frames and pitch opens independently',async()=>{
+ const f=fixture(),admin=await owner(f);await clip(f,admin,4);
+ const ball=await makeBundle(f,admin,{task:'ball',count:4});
+ assert.equal(ball.result.response.status,201);
+ assert.deepEqual(ball.data.jobs.map(j=>[j.kind,j.total,j.depends_on]),[['ball',4,null]]);
+ const pitch=await makeBundle(f,admin,{task:'pitch',count:4,memberId:ball.data.memberId});
+ assert.equal(pitch.result.response.status,201);
+ assert.equal(pitch.data.code,null);
+ assert.deepEqual(pitch.data.jobs.map(j=>[j.kind,j.total,j.depends_on]),[['pitch',4,null]]);
+ const login=await f.call('/api/login',{method:'POST',body:{code:ball.data.code}});
+ const opened=await f.call('/api/review-jobs/'+pitch.data.jobs[0].id,{cookie:login.cookie});
+ assert.equal(opened.response.status,200);
+ assert.equal((await opened.data()).items.length,4);
+ const unavailable=await makeBundle(f,admin,{task:'ball',count:1});
+ assert.equal(unavailable.result.response.status,409);
 });
 test('pitch drafts are not training labels and invalid or unassigned saves are rejected',async()=>{
  const f=fixture(),admin=await owner(f);await clip(f,admin,4);const {data}=await makeBundle(f,admin,{count:1});const login=await f.call('/api/login',{method:'POST',body:{code:data.code}}),cookie=login.cookie;const ball=data.jobs.find(j=>j.kind==='ball');const b=await(await f.call('/api/review-jobs/'+ball.id,{cookie})).data();const item=b.items[0];

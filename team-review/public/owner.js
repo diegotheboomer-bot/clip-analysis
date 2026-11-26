@@ -181,9 +181,10 @@ export async function initOwner() {
     event.preventDefault();event.submitter.disabled=true;
     try{
       batchRequest ||= crypto.randomUUID();
-      const result=await api('/api/admin/review-bundles',{method:'POST',body:JSON.stringify({requestId:batchRequest,memberId:$('batch-member').value||undefined,name:$('batch-name').value||'Friend reviewer',matchGroup:$('batch-match').value,count:Number($('batch-count').value)})});
-      $('batch-invite').hidden=false;$('batch-invite').replaceChildren(el('strong',result.code?'Code: '+result.code:'Use this reviewer’s existing code'),el('p',location.origin+'/?batches=1&login=1'),el('p','First: ball frames. Then: pitch lines. Everything saves to the site; no files to send back.'));
-      $('batch-feedback').textContent='Batches created. Share the link and code privately.';batchRequest=null;await refresh();
+      const result=await api('/api/admin/review-bundles',{method:'POST',body:JSON.stringify({requestId:batchRequest,memberId:$('batch-member').value||undefined,name:$('batch-name').value||'Friend reviewer',matchGroup:$('batch-match').value,count:Number($('batch-count').value),task:$('batch-task').value})});
+      const link=el('a','Open reviewer sign-in');link.href='/?batches=1&login=1';
+      $('batch-invite').hidden=false;$('batch-invite').replaceChildren(el('strong',result.code?'Code: '+result.code:'Use this reviewer’s existing code'),el('p',result.jobs.map(job=>job.title).join(' · ')),link);
+      $('batch-feedback').textContent='Ready to review. Share the link and code privately.';batchRequest=null;await refresh();
     }catch(e){$('batch-feedback').textContent=e.message;}finally{event.submitter.disabled=false;}
   };
   const model = await api("/api/admin/model-info");
