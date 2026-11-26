@@ -6,9 +6,17 @@ export function editableLines(mode,lines,activeId){
 }
 export function validPoint(p) { return Array.isArray(p) && p.length===2 && p.every(n=>typeof n==='number' && Number.isFinite(n)); }
 export function makePitchLine(start,end,{kind='unknown',visibility='visible',id='line'}={}) {
-  if(!validPoint(start)||!validPoint(end)||Math.hypot(end[0]-start[0],end[1]-start[1])<2)throw Error('Drag a longer line.');
+  if(!validPoint(start)||!validPoint(end)||Math.hypot(end[0]-start[0],end[1]-start[1])<2)throw Error('Tap farther from the first point.');
   if(!LINE_KINDS.includes(kind)||!['visible','inferred'].includes(visibility))throw Error('Choose a valid line type and visibility.');
   return {id,start:[...start],end:[...end],kind,visibility};
+}
+export function snapPitchPoint([x,y],{width,height},tolerance) {
+  if(x<-tolerance||x>width+tolerance||y<-tolerance||y>height+tolerance)return null;
+  const snap=(value,size)=>{
+    if(Math.min(value,size-value)>tolerance)return value;
+    return value<=size/2?0:size;
+  };
+  return [snap(x,width),snap(y,height)];
 }
 export function lineHit(p,line,tolerance) {
   const endpoints=['start','end'].map(endpoint=>({endpoint,distance:Math.hypot(p[0]-line[endpoint][0],p[1]-line[endpoint][1])})).sort((a,b)=>a.distance-b.distance);

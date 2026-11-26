@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makePitchLine, lineHit, movePitchLine, editableLines } from '../public/pitch-lines.mjs';
+import { makePitchLine, lineHit, movePitchLine, editableLines, snapPitchPoint } from '../public/pitch-lines.mjs';
 import { initialCorrection, trainingAnnotations, validateCorrection } from '../public/prediction-core.mjs';
 const f={id:'0',width:1920,height:1080,time:0,selected:null,candidates:[],players:[],landmarks:[]};
+test('taps near the actual image edge snap, while taps in padding are ignored',()=>{
+ const start=snapPitchPoint([240,415],f,32);
+ const end=snapPitchPoint([1901,982],f,32);
+ assert.deepEqual(makePitchLine(start,end).end,[1920,982]);
+ assert.deepEqual(snapPitchPoint([-4,1073],f,16),[0,1080]);
+ assert.equal(snapPitchPoint([240,1145],f,32),null);
+ assert.deepEqual(snapPitchPoint([1200,714],f,4),[1200,714]);
+});
 test('drawing from a shared corner never selects or mutates a previous line',()=>{
  const corner=[20,30],a=makePitchLine(corner,[500,30],{id:'a'}),b=makePitchLine(corner,[20,600],{id:'b'});
  assert.deepEqual(editableLines('line',[a,b],'a'),[]);const moved=movePitchLine(b,'start',[45,60],corner,f);assert.deepEqual(a.start,[20,30]);assert.deepEqual(b.start,[20,30]);assert.deepEqual(moved.start,[45,60]);assert.equal(editableLines('select',[a,b],'a')[0],a);
