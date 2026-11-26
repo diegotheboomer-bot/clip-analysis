@@ -103,3 +103,10 @@ The browser workflow was also checked with Chromium at desktop and mobile
 viewports, covering taps, pinch zoom, two-finger pan, drag boxes, gesture
 cancellation, one-pixel box changes, context frame protection,
 draft restoration, JSON downloads, reviewer conflicts and COCO coordinates.
+
+
+## Marking a period without a ball
+
+Use **Outside & next** or **Can't tell & next** for a single frame. For a run, choose **Mark several frames**, tap the last thumbnail (or **Select all shown**), choose the absence reason, and save the group. A run contains at most 20 consecutive frames from one clip. Existing saved answers are preserved. If you lose sight of the ball, use Can't tell unless you know it left the image.
+
+The legacy page stores these answers in the same local review JSON. New clip imports, personal reviewer codes and shared saves are available at https://pitchcam-team-review.skillfulkumquat.chatgpt.site/ through organiser access.

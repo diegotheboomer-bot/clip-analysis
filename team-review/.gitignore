@@ -1,0 +1,10 @@
+node_modules/
+dist/
+generated/
+.wrangler/
+.sites-runtime/
+.dev.vars*
+.env*
+outputs/
+__pycache__/
+*.pyc

@@ -1,0 +1,5 @@
+const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
+export function showReviewJobs(jobs){
+  const host=el('section',undefined,'job-dashboard');host.append(el('h1','Your review batches'),el('p','One task at a time. Changes save to this site—nothing to download or send back.'));
+  const grid=el('div',undefined,'job-grid');for(const j of jobs){const card=el('article',undefined,'job-card'),done=Number(j.done||0),total=Number(j.total),finished=done===total&&total>0;card.append(el('span',j.kind==='ball'?'BALL':'PITCH LINES','job-kind'),el('h2',j.title),el('strong',`${done} / ${total} completed`));const bar=el('progress');bar.max=total;bar.value=done;card.append(bar);if(finished)card.append(el('p','Completed · saved in your team dataset','job-completed'));else if(j.locked)card.append(el('p','Complete the ball batch to unlock this one.'));else{const link=el('a',done?'Continue batch':'Start batch','primary button-link');link.href='/corrections.html?job='+encodeURIComponent(j.id);card.append(link);}grid.append(card);}host.append(grid);document.querySelector('main').prepend(host);
+}

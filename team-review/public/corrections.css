@@ -1,0 +1,45 @@
+:root{font:16px/1.5 system-ui,sans-serif;color:#e9efeb;background:#101715;color-scheme:dark}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}header{padding:14px 3%;border-bottom:1px solid #2c3a32;display:flex;align-items:center;gap:20px;flex-wrap:wrap}a{color:#d4fb94;text-decoration:none;font-weight:750}header a{margin-right:auto}header span,.muted{color:#a9bab0}main{max-width:1680px;margin:auto;padding:22px}.card{background:#17221b;border:1px solid #34463a;border-radius:14px;padding:22px;margin-bottom:20px}h1{font-size:1.7rem;margin:0 0 12px}h2{font-size:1.15rem}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px;align-items:start}.layout>div{min-width:0}.stage{height:min(68vh,760px);min-height:320px;overflow:hidden;background:#070b08;border:1px solid #34463a;border-radius:12px;touch-action:none;position:relative}.stage.drawing{cursor:crosshair}canvas{width:100%;height:100%;display:block;touch-action:none}
+button,select,input{font:inherit;border:1px solid #42594a;border-radius:8px;background:#213027;color:inherit;padding:10px 12px;min-height:44px;max-width:100%}button{cursor:pointer;white-space:nowrap;line-height:1.3;transition:background .12s,border-color .12s}button:hover,button.active{border-color:#bddc92;background:#32472b}.primary,#open{background:#d4fb94;border-color:#d4fb94;color:#14200f;font-weight:750}button:disabled{opacity:.5;cursor:default}label{display:grid;gap:6px;margin:10px 0;font-size:.875rem;min-width:0}select{width:100%;text-overflow:ellipsis}label input[type=file]{max-width:340px}input[type=range]{padding:0;accent-color:#cdfb86}#timeline{width:100%;margin:10px 0 18px;min-height:24px}.tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:4px;background:#0f1913;border-radius:10px;margin-bottom:18px}.tabs button{min-width:0;padding:10px 5px;border-color:transparent;background:transparent}.tabs button.active{background:#30432a;border-color:#93b968}.nav{display:grid;grid-template-columns:minmax(160px,1fr) auto auto;gap:14px;align-items:center}.navigation-buttons{display:flex;gap:8px}.nav strong{font-size:.95rem;font-weight:600}.queue-settings{position:relative;margin:0}.queue-settings>summary{border:1px solid #42594a;border-radius:8px;padding:10px 12px;white-space:nowrap;list-style:none}.queue-grid{position:absolute;z-index:3;right:0;top:50px;width:280px;background:#1a291f;border:1px solid #4b6253;border-radius:12px;box-shadow:0 12px 35px #0008;padding:18px;display:grid;gap:8px}.queue-grid button{width:100%}.queue-grid label{margin:0}.queue-grid select{margin-bottom:5px}
+.edit-tools{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:16px 0}.edit-tools button{min-width:0;padding:11px 8px}.review-panel{padding:18px}.review-panel p{margin:12px 0}.review-panel #layer-help{min-height:48px;font-size:.95rem;color:#c7d2ca}.field-pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}.pitch-legend{display:flex;gap:22px;font-size:.875rem;color:#bfcfc1;padding:14px 0 3px}.pitch-legend span{display:flex;align-items:center;gap:7px}.pitch-legend i{display:inline-block;width:24px;border-top:2px solid #cfff75}.pitch-legend .dashed-line{border-top:2px dashed #ffbc75}.landmark-details{border-top:1px solid #34463a;padding-top:14px;margin-top:18px}details{margin:18px 0}summary{cursor:pointer;color:#d5e1d8}.muted{font-size:.875rem;line-height:1.55}#message{color:#f0c890;min-height:0;margin:8px 0}#message:empty{display:none}#review-state{color:#c8dbb6;font-size:.875rem;border-top:1px solid #34463a;padding-top:15px}#confirm{width:100%;margin:8px 0 0;min-height:50px}#saved{font-size:.875rem}#candidates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}#candidates button{padding:9px 4px;min-width:0;font-size:.875rem}button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #d4fb94;outline-offset:3px}
+@media(max-width:1000px){.layout{grid-template-columns:minmax(0,1fr) 290px}.review-panel{padding:14px}main{padding:14px}.nav{grid-template-columns:1fr auto}.nav strong{grid-column:1/-1}.queue-settings{justify-self:end}.stage{height:60vh}.row label:has(input[type=range]){flex:1}}
+@media(max-width:740px){.layout{grid-template-columns:1fr}.stage{height:46vh;min-height:250px}.nav{gap:8px}.card{padding:16px}.review-panel #layer-help{min-height:0}.edit-tools{grid-template-columns:repeat(4,minmax(0,1fr))}.edit-tools button{font-size:.875rem;padding:11px 4px}.field-pair{grid-template-columns:1fr 1fr;gap:10px}header{padding:12px;gap:10px}#saved{width:100%;font-size:.8rem}.tabs{margin-bottom:12px}#confirm{position:sticky;bottom:10px;z-index:2;box-shadow:0 4px 20px #0007}.queue-grid{width:min(280px,85vw)}}
+@media(max-width:380px){.edit-tools{grid-template-columns:repeat(2,minmax(0,1fr))}.field-pair{grid-template-columns:1fr}.nav{grid-template-columns:1fr}.nav strong{grid-column:auto}.queue-settings{justify-self:stretch}.queue-settings>summary{text-align:center}.navigation-buttons button{flex:1}}
+
+#pitch-tools .field-pair{grid-template-columns:1fr}.nav strong{overflow-wrap:anywhere}
+/* Single-purpose ball review: drag, submit, unseen, undo. */
+.simple-ball .review-panel,.simple-ball #timeline,.simple-ball .queue-settings,.simple-ball .navigation-buttons,.simple-ball .layout>div>.row,.simple-ball .layout>div>p,.simple-ball #change-files{display:none!important}
+.simple-ball .layout{display:block}.simple-ball main{max-width:1500px;padding:14px 20px}.simple-ball .stage{height:calc(100dvh - 205px);min-height:280px;max-height:850px;cursor:crosshair}.simple-ball .nav{display:block;margin:0 0 12px}.simple-ball .nav strong{font-size:1rem}.simple-ball header{padding:12px 20px}.simple-actions{display:grid;grid-template-columns:1fr 1.5fr 2fr;gap:12px;margin-top:14px}.simple-actions button{min-height:54px;font-size:1rem}.simple-actions #confirm{margin:0;position:static;box-shadow:none}.simple-ball #message{margin:6px 0}.simple-ball #saved{width:auto}
+@media(max-width:600px){.simple-ball main{padding:10px}.simple-ball .stage{height:calc(100dvh - 225px);min-height:250px}.simple-actions{grid-template-columns:1fr 1.5fr 1.6fr;gap:7px}.simple-actions button{padding:10px 6px;font-size:.875rem;min-height:54px}.simple-ball header{padding:10px}.simple-ball header a{font-size:.95rem}.simple-ball #saved{font-size:.8rem}.simple-ball .nav strong{font-size:.875rem}}
+.simple-ball .stage{border:0;border-radius:8px}.earlier-view{position:absolute;top:12px;left:12px;background:#102018e8;border-color:#b7d88e;min-height:44px;padding:9px 16px;z-index:1;box-shadow:0 2px 8px #0006}.simple-ball #message{font-size:.875rem}
+/* Pin the render surface to the stage; intrinsic canvas dimensions never affect layout. */
+#stage>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;margin:0;padding:0;border:0}.reset-view{position:absolute;top:12px;right:12px;z-index:1;background:#102018e8;min-height:44px;padding:9px 16px}
+
+/* Shared pitch review keeps the image, line tools and submission in one view. */
+.simple-pitch main{max-width:1250px;padding:18px}
+.simple-pitch .layout{grid-template-columns:minmax(0,1fr) 280px;gap:16px}
+.simple-pitch .nav{margin:0 0 12px}
+.simple-pitch #timeline,.simple-pitch .queue-settings,.simple-pitch .review-panel .tabs,
+.simple-pitch #pitch-tools,.simple-pitch #review-state,.simple-pitch .review-panel>p.muted,
+.simple-pitch .layout>div>p,.simple-pitch .layout>div>.row label{display:none!important}
+.simple-pitch .stage{border:0;border-radius:10px}
+.simple-pitch .layout>div>.row{justify-content:center;margin-top:8px}
+.simple-pitch .review-panel{margin:0;padding:14px;display:grid;gap:10px;border-radius:12px}
+.simple-pitch .review-panel #layer-help{min-height:0;margin:0}
+.simple-pitch .edit-tools,.pitch-evidence,.pitch-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0}
+.simple-pitch #remove{grid-column:1/-1}
+.pitch-evidence button[aria-pressed="true"]{border-color:#a9c978;background:#30432a}
+.pitch-evidence button::before{content:"";display:inline-block;width:14px;margin:0 6px 3px 0;border-top:2px solid #cfff75}
+.pitch-evidence #pitch-assumed::before{border-top:2px dashed #ffbc75}
+.pitch-actions{grid-template-columns:minmax(0,1fr) minmax(0,2fr)}
+.pitch-actions #confirm{margin:0;position:static;box-shadow:none}
+@media(max-width:740px){
+ .simple-pitch main{padding:10px}
+ .simple-pitch .layout{grid-template-columns:1fr;gap:12px}
+ .simple-pitch .nav{display:flex;justify-content:space-between}
+ .simple-pitch .nav strong{flex:1;min-width:0}
+ .simple-pitch .navigation-buttons{gap:6px}
+ .simple-pitch .navigation-buttons button{padding-inline:8px;font-size:.875rem}
+ .simple-pitch .layout>div>.row button{padding-inline:12px}
+}

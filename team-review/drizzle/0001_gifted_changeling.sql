@@ -1,0 +1,1 @@
+ALTER TABLE `frames` ADD `model_hash` text;

@@ -7,10 +7,16 @@ import {
   validateSubmission,
   collectOptions,
   toCoco,
-} from "./core.mjs?v=3";
+} from "./core.mjs";
 
-import { bindImageGestures } from "./gestures.mjs?v=3";
+import { bindImageGestures } from "./gestures.mjs";
+import { runCandidates, rangeSelection } from "./absence-run.mjs";
 
+const team = window.PITCHCAM_TEAM;
+let saveBusy = false;
+let runFrames = [],
+  runEnd = 0,
+  runReason = "unknown";
 const $ = (id) => document.getElementById(id);
 const elements = { overview: $("overview") };
 const imageCache = new Map();
@@ -52,7 +58,9 @@ function persist() {
     storageOK = false;
   }
   $("save-state").textContent = storageOK
-    ? "Saved on this device"
+    ? team
+      ? "Draft saved on this device"
+      : "Saved on this device"
     : "Save unavailable · export results";
 }
 
@@ -85,12 +93,14 @@ function imageAt(path) {
 
 function syncButtons() {
   document.querySelectorAll("[data-status]").forEach((button) => {
+    button.disabled = saveBusy;
     button.setAttribute(
       "aria-pressed",
       String(button.dataset.status === draft.status),
     );
   });
   document.querySelectorAll("[data-reason]").forEach((button) => {
+    button.disabled = saveBusy;
     button.setAttribute(
       "aria-pressed",
       String(button.dataset.reason === draft.reason),
@@ -117,13 +127,24 @@ function syncButtons() {
     valid = true;
   } catch {}
   $("save-next-button").disabled =
-    !valid || !frameReady || context !== "image" || gesturing;
-  $("previous-button").disabled = currentIndex === 0;
+    !valid || !frameReady || context !== "image" || gesturing || saveBusy;
+  $("previous-button").disabled = saveBusy || currentIndex === 0;
+  $("skip-button").disabled = saveBusy;
+  $("results-button").disabled = saveBusy;
+  $("reset-view").disabled = saveBusy;
   $("save-next-button").firstChild.textContent =
     currentIndex === batch.frames.length - 1
       ? "Save & finish "
       : "Save & next ";
-  $("remove-box").disabled = !draft.bbox || gesturing || context !== "image";
+  $("remove-box").disabled =
+    saveBusy || !draft.bbox || gesturing || context !== "image";
+  for (const id of ["outside-next", "unknown-next", "mark-run"])
+    $(id).disabled =
+      saveBusy || !frameReady || gesturing || context !== "image";
+  $("mark-run").hidden = team?.user.role === "owner";
+  $("mark-run").disabled ||=
+    rangeSelection(runCandidates(batch.frames, currentIndex), 19, state.answers)
+      .length < 2;
   $("zoom-level").textContent =
     (frame().width / overviewView[2]).toFixed(1) + "×";
 }
@@ -228,9 +249,27 @@ function go(index) {
   const f = frame();
   overviewView = [0, 0, f.width, f.height];
   draft = structuredClone(
-    state.drafts[f.id] || state.answers[f.id] || initialDraft(),
+    state.drafts[f.id] ||
+      state.answers[f.id] ||
+      f.answer ||
+      (f.proposal
+        ? { ...initialDraft(), status: "visible", bbox: f.proposal.bbox }
+        : initialDraft()),
   );
   $("frame-label").textContent = f.source;
+  let proposalNote = $("proposal-note");
+  if (team && !proposalNote) {
+    proposalNote = document.createElement("p");
+    proposalNote.id = "proposal-note";
+    proposalNote.className = "team-notice";
+    $("overview-hint").after(proposalNote);
+  }
+  if (proposalNote)
+    proposalNote.textContent = f.proposal
+      ? "AI proposal · " +
+        Math.round(f.proposal.confidence * 100) +
+        "% confidence. Check or redraw the box, then save."
+      : "AI did not locate a ball. Check the frame and mark its visibility.";
   $("time-label").textContent = f.timestampSec.toFixed(2) + " s";
   elements.overview.style.aspectRatio = f.width + " / " + f.height;
   $("workspace").hidden = false;
@@ -261,10 +300,32 @@ function removeBox() {
   changed();
 }
 
-function saveNext() {
-  if (!frameReady || context !== "image") return;
+async function saveNext() {
+  if (!frameReady || context !== "image" || saveBusy) return;
   try {
-    state.answers[frame().id] = validateAnswer(draft, frame());
+    const answer = validateAnswer(draft, frame());
+    if (team) {
+      saveBusy = true;
+      syncButtons();
+      const f = frame(),
+        signature = JSON.stringify(answer);
+      if (!state.saves[f.id] || state.saves[f.id].signature !== signature)
+        state.saves[f.id] = {
+          operationId: uuid(),
+          version: f.version,
+          signature,
+        };
+      persist();
+      $("save-state").textContent = "Saving to team…";
+      const saved = await team.api("/api/labels/" + f.id, {
+        method: "PUT",
+        body: JSON.stringify({ ...state.saves[f.id], answer }),
+      });
+      f.version = saved.version;
+      f.reviewed = true;
+      delete state.saves[f.id];
+    }
+    state.answers[frame().id] = answer;
     persist();
     if (currentIndex < batch.frames.length - 1) {
       go(currentIndex + 1);
@@ -273,7 +334,168 @@ function saveNext() {
         $("workspace").scrollIntoView({ block: "start", behavior: "instant" });
     } else showResults();
   } catch (err) {
-    error(err.message);
+    persist();
+    error(err.message + (team ? " Your draft is kept on this device." : ""));
+  } finally {
+    saveBusy = false;
+    syncButtons();
+  }
+}
+
+async function quickAbsence(reason) {
+  if (saveBusy || !frameReady || context !== "image" || gesturing) return;
+  draft = { ...initialDraft(), status: "not_visible", reason };
+  changed();
+  await saveNext();
+}
+
+const reasonNames = {
+  outside_frame: "Outside frame",
+  hidden: "Hidden",
+  unknown: "Can't tell",
+};
+
+function updateRun() {
+  const selected = rangeSelection(runFrames, runEnd, state.answers);
+  const kept = runEnd + 1 - selected.length;
+  $("run-summary").textContent =
+    `${selected.length} frame${selected.length === 1 ? "" : "s"} will be marked ${reasonNames[runReason]}.${kept ? ` ${kept} saved review${kept === 1 ? "" : "s"} will be kept.` : ""}`;
+  $("run-submit").textContent = saveBusy
+    ? "Saving frames…"
+    : `Mark ${selected.length} frame${selected.length === 1 ? "" : "s"}`;
+  $("run-submit").disabled = saveBusy || !selected.length;
+  $("run-all").disabled = $("run-close").disabled = saveBusy;
+  document.querySelectorAll("[data-run-reason]").forEach((button) => {
+    button.disabled = saveBusy;
+    button.setAttribute(
+      "aria-pressed",
+      String(button.dataset.runReason === runReason),
+    );
+  });
+  [...$("run-grid").children].forEach((button, position) => {
+    button.disabled = saveBusy;
+    button.classList.toggle("in-range", position <= runEnd);
+    button.classList.toggle("range-end", position === runEnd);
+    button.setAttribute("aria-pressed", String(position <= runEnd));
+  });
+}
+
+function openRun() {
+  if (saveBusy || !frameReady || context !== "image") return;
+  runFrames = runCandidates(batch.frames, currentIndex);
+  runEnd = 0;
+  runReason =
+    draft.status === "not_visible" ? draft.reason || "unknown" : "unknown";
+  $("run-error").textContent = "";
+  $("run-source").textContent =
+    frame().source + " · your assigned frames from this clip";
+  $("run-grid").replaceChildren(
+    ...runFrames.map(({ frame: f, index }, position) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "run-frame";
+      button.onclick = () => {
+        runEnd = position;
+        updateRun();
+      };
+      const picture = document.createElement("span");
+      picture.className = "run-picture";
+      const img = document.createElement("img");
+      img.src = f.thumbnail || f.image;
+      img.alt = "";
+      img.loading = "lazy";
+      picture.append(img);
+      if (f.proposal?.bbox) {
+        const box = document.createElement("span");
+        box.className = "run-ai-box";
+        const [x, y, w, h] = f.proposal.bbox;
+        Object.assign(box.style, {
+          left: `${(100 * x) / f.width}%`,
+          top: `${(100 * y) / f.height}%`,
+          width: `${(100 * w) / f.width}%`,
+          height: `${(100 * h) / f.height}%`,
+        });
+        picture.append(box);
+      }
+      const caption = document.createElement("span");
+      caption.textContent = `${index + 1} · ${f.timestampSec.toFixed(2)} s`;
+      button.append(picture, caption);
+      if (f.reviewed || f.answer || state.answers[f.id]) {
+        const kept = document.createElement("small");
+        kept.textContent = "Reviewed · kept";
+        button.append(kept);
+      }
+      return button;
+    }),
+  );
+  updateRun();
+  $("run-dialog").showModal();
+}
+
+async function saveRun() {
+  if (saveBusy) return;
+  const selected = rangeSelection(runFrames, runEnd, state.answers);
+  if (!selected.length) return;
+  const answer = validateAnswer(
+    { status: "not_visible", reason: runReason },
+    frame(),
+  );
+  const signature = JSON.stringify(answer);
+  saveBusy = true;
+  syncButtons();
+  updateRun();
+  $("run-error").textContent = "";
+  try {
+    if (team) {
+      const targets = selected.map(({ frame: f }) => {
+        if (!state.saves[f.id] || state.saves[f.id].signature !== signature)
+          state.saves[f.id] = {
+            operationId: uuid(),
+            version: f.version,
+            signature,
+          };
+        return { id: f.id, ...state.saves[f.id] };
+      });
+      persist();
+      const result = await team.api("/api/labels/bulk", {
+        method: "PUT",
+        body: JSON.stringify({ reason: runReason, frames: targets }),
+      });
+      const versions = new Map(result.frames.map((f) => [f.id, f.version]));
+      for (const { frame: f } of selected) {
+        f.version = versions.get(f.id);
+        f.reviewed = true;
+      }
+    }
+    for (const { frame: f } of selected) {
+      state.answers[f.id] = structuredClone(answer);
+      state.drafts[f.id] = structuredClone(answer);
+      delete state.saves[f.id];
+    }
+    if (selected.some(({ frame: f }) => f.id === frame().id))
+      draft = structuredClone(answer);
+    persist();
+    $("run-dialog").close();
+    saveBusy = false;
+    const last = runFrames[runEnd].index;
+    const unfinished = (f) => !state.answers[f.id] && !f.reviewed && !f.answer;
+    let next = batch.frames.findIndex(
+      (f, index) => index > last && unfinished(f),
+    );
+    if (next < 0) next = batch.frames.findIndex(unfinished);
+    if (next < 0) showResults();
+    else {
+      go(next);
+      if (matchMedia("(max-width:700px)").matches)
+        $("workspace").scrollIntoView({ block: "start", behavior: "instant" });
+    }
+  } catch (err) {
+    persist();
+    $("run-error").textContent = err.message + " You can retry this selection.";
+  } finally {
+    saveBusy = false;
+    syncButtons();
+    updateRun();
   }
 }
 
@@ -377,7 +599,27 @@ function showResults() {
     };
     list.append(button);
   });
-  renderCollection();
+  if (team) {
+    document.querySelector(".organiser").hidden = true;
+    document.querySelector("#results-view .reviewer").hidden = true;
+    $("share-results").hidden = true;
+    $("download-results").textContent = "Download batch backup";
+    document.querySelector("#results-view .send-card h2").textContent =
+      "Your saved labels are with the organiser";
+    document.querySelector("#results-view .send-card p").textContent =
+      "Every Save & next sends your checked label to the team. You can download a copy of this batch.";
+    let next = $("claim-next");
+    if (!next) {
+      next = document.createElement("button");
+      next.id = "claim-next";
+      next.className = "primary";
+      next.textContent =
+        team.user.role === "owner" ? "Back to dashboard" : "Get next batch";
+      next.onclick = () =>
+        team.user.role === "owner" ? location.assign("/") : location.reload();
+      document.querySelector(".send-actions").prepend(next);
+    }
+  } else renderCollection();
   window.scrollTo(0, 0);
 }
 
@@ -501,7 +743,10 @@ function bindEvents() {
   cancelGestures.push(
     bindImageGestures(elements.overview, {
       enabled: () =>
-        frameReady && context === "image" && !$("workspace").hidden,
+        !saveBusy &&
+        frameReady &&
+        context === "image" &&
+        !$("workspace").hidden,
       image: frame,
       getView: () => overviewView,
       setView: (view) => {
@@ -555,6 +800,25 @@ function bindEvents() {
     scheduleDraw();
   };
   $("remove-box").onclick = removeBox;
+  $("outside-next").onclick = () => quickAbsence("outside_frame");
+  $("unknown-next").onclick = () => quickAbsence("unknown");
+  $("mark-run").onclick = openRun;
+  $("run-all").onclick = () => {
+    runEnd = runFrames.length - 1;
+    updateRun();
+  };
+  $("run-close").onclick = () => $("run-dialog").close();
+  $("run-dialog").addEventListener("cancel", (event) => {
+    if (saveBusy) event.preventDefault();
+  });
+  $("run-submit").onclick = saveRun;
+  document.querySelectorAll("[data-run-reason]").forEach(
+    (button) =>
+      (button.onclick = () => {
+        runReason = button.dataset.runReason;
+        updateRun();
+      }),
+  );
   for (const [id, which] of [
     ["before-button", "before"],
     ["current-button", "image"],
@@ -616,7 +880,8 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (
       event.target.matches("input,textarea,select") ||
-      dialog.open ||
+      document.querySelector("dialog[open]") ||
+      saveBusy ||
       $("workspace").hidden
     )
       return;
@@ -653,15 +918,19 @@ function bindEvents() {
 
 async function start() {
   try {
-    const response = await fetch("batch.json");
-    if (!response.ok) throw new Error("Couldn't load the batch.");
-    batch = await response.json();
+    if (team) batch = team.batch;
+    else {
+      const response = await fetch("batch.json");
+      if (!response.ok) throw new Error("Couldn't load the batch.");
+      batch = await response.json();
+    }
     if (!batch.frames?.length) throw new Error("This batch has no frames.");
     storageKey = "pitchcam-labels:" + batch.id;
     state = {
       reviewerId: uuid(),
       answers: {},
       drafts: {},
+      saves: {},
       imports: [],
       choices: {},
       annotator: "",
@@ -681,6 +950,7 @@ async function start() {
         );
         state = { ...state, ...saved, answers: clean.answers };
         state.drafts = saved.drafts || {};
+        state.saves = saved.saves || {};
         state.imports = (saved.imports || []).map((s) =>
           validateSubmission(s, batch),
         );
@@ -689,6 +959,7 @@ async function start() {
       $("save-state").textContent = "Couldn't restore progress";
     }
     const position = batch.frames.findIndex((f) => f.id === state.currentId);
+    if (team) state.annotator = team.user.name;
     $("reviewer-name").value = state.annotator;
     $("loading").hidden = true;
     bindEvents();
